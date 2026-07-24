@@ -170,7 +170,7 @@ const INTRINSIC = {
   CBETH:   { proj: "coinbase-wrapped-staked-eth", sym: "CBETH" },
   EZETH:   { proj: "renzo", sym: "EZETH" },
   SFRXETH: { proj: "frax-ether", sym: "SFRXETH" },
-  OSETH:   { proj: "stakewise-v3", sym: "OSETH" },
+  OSETH:   { proj: "stakewise-v2", sym: "OSETH" },
   SUSDE:   { proj: "ethena-usde", sym: "SUSDE" },
   SUSDS:   { proj: "sky-lending", sym: "SUSDS" },
   SDAI:    { proj: "sky-lending", sym: "SDAI" },
@@ -208,8 +208,10 @@ const USD_BORROW = ["USDC","USDT","USDT0","DAI","GHO","USDE","AUSD","MUSD","USDC
 // e-modes we have personally verified on-chain (date-labeled); everything else with API ltv=0
 // is shown at a 3x reference leverage with a verify flag instead of a fabricated max.
 const VERIFIED_EMODE = {
-  "Plasma|SYRUPUSDT": { ltv: 0.90, lt: 0.92, asof: "on-chain 2026-07-18" },
-  "Ethereum|WSTETH":  { ltv: 0.93, lt: 0.95, asof: "on-chain 2026-07-18 (ETH-correlated e-mode)" },
+  // borrow: the e-mode category's borrowable set; exhaustive: we verified this is the ONLY
+  // e-mode for the collateral on that chain, so other pairs are impossible when base LTV ~ 0.
+  "Plasma|SYRUPUSDT": { ltv: 0.90, lt: 0.92, borrow: ["USDT0"], exhaustive: true, asof: "on-chain 2026-07-24 (cat 11, USDT0-only)" },
+  "Ethereum|WSTETH":  { ltv: 0.93, lt: 0.95, borrow: ["WETH"], exhaustive: false, asof: "on-chain 2026-07-18 (ETH-correlated)" },
 };
 const REF_LEV = 3;
 
@@ -232,15 +234,17 @@ function hideTT() { $("tt").style.opacity = 0; }
   const byId = Object.fromEntries(pools.map(p => [p.pool, p]));
   $("asof").textContent = "fetched " + new Date().toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
-  const intr = {};
+  const intr = {}, intrChain = {};
   for (const [sym, src] of Object.entries(INTRINSIC)) {
     let p = src.id ? byId[src.id] : null;
     if (!p) p = pools.filter(x => x.project === src.proj && x.symbol.toUpperCase() === src.sym)
                      .sort((a, b) => b.tvlUsd - a.tvlUsd)[0];
     intr[sym] = p ? { apy: p.apy || 0, src: p.project, pool: p.pool } : null;
   }
+  { const g = pools.filter(x => x.project === "sdai" && x.chain === "Gnosis").sort((a, b) => b.tvlUsd - a.tvlUsd)[0];
+    if (g) intrChain["Gnosis|SDAI"] = { apy: g.apy || 0, src: "sdai (gnosis)", pool: g.pool }; }
 
-  const aave = pools.filter(p => p.project === "aave-v3").map(p => {
+  const aave = pools.filter(p => p.project === "aave-v3" && !(p.chain === "Ethereum" && p.poolMeta)).map(p => {
     const b = lb[p.pool] || {};
     return { chain: p.chain, sym: p.symbol.toUpperCase(), pool: p.pool,
       supplyBase: p.apyBase || 0, supplyRew: p.apyReward || 0, tvl: p.tvlUsd || 0,
@@ -258,7 +262,8 @@ function hideTT() { $("tt").style.opacity = 0; }
     for (const [cat, colls, borrows] of [["eth", ETH_COLL, ETH_BORROW], ["usd", USD_COLL, USD_BORROW]]) {
       for (const cs of colls) {
         const cm = mkts[cs];
-        if (!cm || cm.tvl < 2e5 || !intr[cs]) continue;
+        const intrX = intrChain[chain + "|" + cs] || intr[cs];
+        if (!cm || cm.tvl < 2e5 || !intrX) continue;
         for (const bs of borrows) {
           const bm = mkts[bs];
           if (!bm || bm.borrowBase == null) continue;
@@ -266,17 +271,19 @@ function hideTT() { $("tt").style.opacity = 0; }
           if (avail < 1e5) continue;
           const util = bm.supplyUsd ? bm.borrowUsd / bm.supplyUsd * 100 : null;
           const ve = VERIFIED_EMODE[chain + "|" + cs];
+          const dust = !(cm.ltv >= 0.05);              // ltv 0 or dust = not usable standard collateral
           let ltvRaw, lt, conf;
-          if (ve) { ltvRaw = ve.ltv; lt = ve.lt; conf = "emode"; }
-          else if (cm.ltv > 0) { ltvRaw = cm.ltv; lt = Math.min(0.98, cm.ltv + 0.02); conf = "api"; }
+          if (ve && ve.borrow.includes(bs)) { ltvRaw = ve.ltv; lt = ve.lt; conf = "emode"; }
+          else if (ve && ve.exhaustive && dust) continue;   // verified: no e-mode allows this borrow -> impossible pair
+          else if (!dust) { ltvRaw = cm.ltv; lt = Math.min(0.98, cm.ltv + 0.02); conf = "api"; }
           else { ltvRaw = null; lt = null; conf = "unverified"; }
-          ROWS.push({ chain, cat, cs, bs, intr: intr[cs].apy, intrSrc: intr[cs].src,
+          ROWS.push({ chain, cat, cs, bs, intr: intrX.apy, intrSrc: intrX.src,
             supplyBase: cm.supplyBase, sRew: cm.supplyRew, bBase: bm.borrowBase, bRew: bm.borrowRew,
             ltv: ltvRaw, lt, conf, assumed: conf === "unverified", emodeAsof: ve ? ve.asof : null,
-            maxLev: ltvRaw ? 1 / (1 - ltvRaw) : 10, avail, util, collTvl: cm.tvl,
+            maxLev: ltvRaw ? Math.max(1.1, 1 / (1 - ltvRaw)) : 5, avail, util, collTvl: cm.tvl,
             collSupplyUsd: cm.supplyUsd, collAvail: Math.max(0, cm.supplyUsd - cm.borrowUsd),
             borrowSupplyUsd: bm.supplyUsd, borrowUsd: bm.borrowUsd, borrowSupplyBaseNow: bm.supplyBase, borrowUnder: bm.under, collUnder: cm.under,
-            key: chain + "|" + cs + "|" + bs, intrPool: intr[cs].pool, collPool: cm.pool, borrowPool: bm.pool });
+            key: chain + "|" + cs + "|" + bs, intrPool: intrX.pool, collPool: cm.pool, borrowPool: bm.pool });
         }
       }
     }
@@ -288,12 +295,14 @@ function hideTT() { $("tt").style.opacity = 0; }
 
 // effective leverage + economics at current settings
 function levOf(r) {
-  if (CUSTL[r.key]) return Math.min(CUSTL[r.key], r.maxLev);
-  if (GCUST) return Math.min(GCUST, r.maxLev);
-  if (r.conf === "unverified") return Math.min(REF_LEV, r.maxLev);
-  if (GLEV === "max") return r.maxLev;
-  if (GLEV === "safe") return Math.min(r.maxLev * 0.75, 10);
-  return Math.min(+GLEV, r.maxLev);
+  let L;
+  if (CUSTL[r.key]) L = Math.min(CUSTL[r.key], r.maxLev);
+  else if (GCUST) L = Math.min(GCUST, r.maxLev);
+  else if (r.conf === "unverified") L = Math.min(REF_LEV, r.maxLev);
+  else if (GLEV === "max") L = r.maxLev;
+  else if (GLEV === "safe") L = Math.min(r.maxLev * 0.75, 10);
+  else L = Math.min(+GLEV, r.maxLev);
+  return Math.max(1.05, L);
 }
 function econOf(r, L) {
   const s = r.intr + r.supplyBase + (REW ? r.sRew : 0);
@@ -452,7 +461,7 @@ function panelHtml(r) {
   const fl = [];
   if (foot > 100) fl.push('<span class="bad">borrow need exceeds available liquidity</span>');
   else if (foot > 10) fl.push(`<span class="wr">you'd take ${foot.toFixed(0)}% of available liquidity (framework cap: 10%)</span>`);
-  if (supFoot != null && supFoot > 15) fl.push(`<span class="wr">you'd be ${supFoot.toFixed(0)}% of the collateral market (cap: 15%)</span>`);
+  if (supFoot != null && supFoot > 20) fl.push(`<span class="wr">you'd be ${supFoot.toFixed(0)}% of the collateral market (cap: 20%)</span>`);
   if (postUtil != null && postUtil > 88) fl.push('<span class="bad">post-trade utilization crosses the kink zone — borrow rate will spike beyond what\'s shown</span>');
   if (r.chain !== "Ethereum") fl.push('<span class="wr">non-mainnet: collateral must be minted natively or bridged — add bridge trust + exit time</span>');
   return `<div class="panel">
@@ -464,7 +473,7 @@ function panelHtml(r) {
         <div>breakeven borrow <b>${(v.s / ((L - 1) / L)).toFixed(2)}%</b> · yearly on ${fmt$(SIZE)}: <b>${fmt$(SIZE * v.net / 100)}</b></div></div>
       <div class="pblock"><div class="ph">Size vs market — deposit ${fmt$(SIZE)}</div>
         <div>gross collateral <b>${fmt$(gross)}</b> · borrow need <b>${fmt$(borrowNeed)}</b></div>
-        <div>you'd be <b class="${supFoot > 15 ? "wr" : ""}">${supFoot != null ? supFoot.toFixed(1) + "%" : "—"}</b> of ${r.cs} supply (${fmt$(r.collSupplyUsd || r.collTvl)}) · <b class="${borShare > 20 ? "wr" : ""}">${borShare != null ? borShare.toFixed(1) + "%" : "—"}</b> of all ${r.bs} borrows</div>
+        <div>you'd be <b class="${supFoot > 20 ? "wr" : ""}">${supFoot != null ? supFoot.toFixed(1) + "%" : "—"}</b> of ${r.cs} supply (${fmt$(r.collSupplyUsd || r.collTvl)}) · <b class="${borShare > 20 ? "wr" : ""}">${borShare != null ? borShare.toFixed(1) + "%" : "—"}</b> of all ${r.bs} borrows</div>
         <div>available to borrow <b>${fmt$(r.avail)}</b> → footprint <b class="${foot > 100 ? "bad" : foot > 10 ? "wr" : "ok"}">${isFinite(foot) ? foot.toFixed(0) + "%" : "—"}</b> (framework cap 10%)</div>
         <div>utilization ${r.util != null ? r.util.toFixed(0) : "—"}% → post-trade <b class="${postUtil > 88 ? "bad" : ""}">${postUtil != null ? postUtil.toFixed(0) + "%" : "—"}</b></div>
         <div>max deposit at ${L.toFixed(1)}×: <b class="${SIZE > maxDep ? "wr" : "ok"}">${isFinite(maxDep) ? fmt$(maxDep) : "—"}</b> <span style="color:var(--muted)">(binds at ${bindTag}; ≤20% of ${r.cs} supply = ${maxBySupply != null ? fmt$(maxBySupply) : "—"}, ≤10% of borrow liq = ${isFinite(maxByBorrow) ? fmt$(maxByBorrow) : "—"})</span></div></div>
@@ -474,7 +483,7 @@ function panelHtml(r) {
         <div>then redeem ${r.cs}: <b>${EXITT[r.cs] || "—"}</b></div>
         <div style="color:var(--muted)">note: your borrow never draws on your own deposit — collateral and debt are different reserves; the borrow-side footprint above already reflects that</div></div>
       <div class="pblock"><div class="ph">Risk at ${L.toFixed(1)}×</div>
-        <div>position LTV <b>${(posLtv * 100).toFixed(1)}%</b> vs LT <b>${(ltEff * 100).toFixed(1)}%${r.conf !== "api" ? "≈" : ""}</b>${r.emodeAsof ? ` <span style="color:var(--muted)">(${r.emodeAsof})</span>` : ""}</div>
+        <div>position LTV <b>${(posLtv * 100).toFixed(1)}%</b> vs LT <b>${(ltEff * 100).toFixed(1)}%${r.conf === "emode" ? "" : "≈"}</b>${r.emodeAsof ? ` <span style="color:var(--muted)">(${r.emodeAsof})</span>` : ""}</div>
         <div>health factor <b class="${hf < 1.05 ? "bad" : hf < 1.15 ? "wr" : "ok"}">${hf.toFixed(3)}</b> · liquidation on a <b>−${(buf * 100).toFixed(1)}%</b> collateral-vs-debt move</div>
         <div>${r.conf === "unverified" ? "LTV not reported by the API — this asset may be e-mode-only or collateral-disabled here. Shown at a " + REF_LEV + "× reference; verify on the Aave UI before sizing." : `max leverage ${r.maxLev.toFixed(1)}× at LTV ${(r.ltv * 100).toFixed(0)}%${r.conf === "emode" ? " (verified e-mode)" : ""}`}</div>
         <div>carry streak <span data-sk="${r.key}">${r.streakTxt !== undefined ? r.streakTxt : "…"}</span> · <a href="https://defillama.com/yields/pool/${r.collPool}" target="_blank" rel="noopener">collateral pool</a> · <a href="https://defillama.com/yields/pool/${r.borrowPool}" target="_blank" rel="noopener">borrow pool</a></div></div>
