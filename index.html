@@ -126,6 +126,42 @@
 const $ = id => document.getElementById(id);
 const fmt$ = v => v >= 1e9 ? "$" + (v/1e9).toFixed(2) + "B" : v >= 1e6 ? "$" + (v/1e6).toFixed(1) + "M" : "$" + (v/1e3).toFixed(0) + "K";
 
+// Aave v3 Pool addresses + CORS-verified RPCs (bgd-labs address-book, verified 2026-07-24)
+const POOLCFG = {
+  "Ethereum":  { pool:"0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2", rpc:["https://ethereum-rpc.publicnode.com","https://eth.drpc.org"] },
+  "Arbitrum":  { pool:"0x794a61358D6845594F94dc1DB02A252b5b4814aD", rpc:["https://arb1.arbitrum.io/rpc","https://arbitrum-one-rpc.publicnode.com"] },
+  "Base":      { pool:"0xA238Dd80C259a72e81d7e4664a9801593F98d1c5", rpc:["https://mainnet.base.org","https://base-rpc.publicnode.com"] },
+  "OP Mainnet":{ pool:"0x794a61358D6845594F94dc1DB02A252b5b4814aD", rpc:["https://mainnet.optimism.io","https://optimism-rpc.publicnode.com"] },
+  "Polygon":   { pool:"0x794a61358D6845594F94dc1DB02A252b5b4814aD", rpc:["https://polygon-bor-rpc.publicnode.com","https://polygon.drpc.org"] },
+  "Avalanche": { pool:"0x794a61358D6845594F94dc1DB02A252b5b4814aD", rpc:["https://api.avax.network/ext/bc/C/rpc","https://avalanche-c-chain-rpc.publicnode.com"] },
+  "BSC":       { pool:"0x6807dc923806fE8Fd134338EABCA509979a7e0cB", rpc:["https://bsc-dataseed.bnbchain.org","https://bsc-rpc.publicnode.com"] },
+  "Gnosis":    { pool:"0xb50201558B00496A145fE76f7424749556E326D8", rpc:["https://rpc.gnosischain.com","https://gnosis-rpc.publicnode.com"] },
+  "Linea":     { pool:"0xc47b8C00b0f69a36fa203Ffeac0334874574a8Ac", rpc:["https://rpc.linea.build","https://linea-rpc.publicnode.com"] },
+  "Sonic":     { pool:"0x5362dBb1e601abF3a4c14c22ffEdA64042E5eAA3", rpc:["https://rpc.soniclabs.com","https://sonic-rpc.publicnode.com"] },
+  "Mantle":    { pool:"0x458F293454fE0d67EC0655f3672301301DD51422", rpc:["https://rpc.mantle.xyz","https://mantle-rpc.publicnode.com"] },
+  "Plasma":    { pool:"0x925a2A7214Ed92428B5b1B090F80b25700095e12", rpc:["https://rpc.plasma.to","https://plasma.drpc.org"] },
+  "Monad":     { pool:"0x69a5F9AD4f96ebf0a0C792dD42a01cC5C0102fef", rpc:["https://rpc.monad.xyz","https://monad.drpc.org"] },
+  "MegaETH":   { pool:"0x7e324AbC5De01d112AfC03a584966ff199741C28", rpc:["https://mainnet.megaeth.com/rpc","https://megaeth.drpc.org"] },
+  "Celo":      { pool:"0x3E59A31363E2ad014dcbc521c4a0d5757d9f3402", rpc:["https://forno.celo.org","https://celo-rpc.publicnode.com"] },
+};
+function withTimeout(ms) { try { return AbortSignal.timeout(ms); } catch (e) { const c = new AbortController(); setTimeout(() => c.abort(), ms); return c.signal; } }
+async function rpcCall(rpcs, to, data) {
+  for (const u of rpcs) {
+    try {
+      const r = await fetch(u, { method:"POST", headers:{ "Content-Type":"application/json" }, signal: withTimeout(9000),
+        body: JSON.stringify({ jsonrpc:"2.0", id:1, method:"eth_call", params:[{ to, data }, "latest"] }) });
+      const j = await r.json();
+      if (j && j.result && j.result !== "0x") return j.result;
+    } catch (e) {}
+  }
+  return null;
+}
+const word = (hex, i) => hex && hex.length >= 2 + 64 * (i + 1) ? hex.slice(2 + 64 * i, 2 + 64 * (i + 1)) : null;
+const wAddr = w => w ? "0x" + w.slice(24) : null;
+const wRayPct = w => w ? Number(BigInt("0x" + w)) / 1e27 * 100 : null;
+const wNum = w => w ? Number(BigInt("0x" + w)) : null;
+const pad = a => "0".repeat(24) + a.slice(2).toLowerCase();
+
 const INTRINSIC = {
   WSTETH:  { proj: "lido", sym: "STETH" },
   WEETH:   { proj: "ether.fi-stake", sym: "WEETH" },
@@ -210,6 +246,7 @@ function hideTT() { $("tt").style.opacity = 0; }
       supplyBase: p.apyBase || 0, supplyRew: p.apyReward || 0, tvl: p.tvlUsd || 0,
       ltv: b.ltv || 0, borrowable: b.borrowable !== false,
       borrowBase: b.apyBaseBorrow, borrowRew: b.apyRewardBorrow || 0,
+      under: (b.underlyingTokens && b.underlyingTokens[0]) || null,
       supplyUsd: b.totalSupplyUsd || p.tvlUsd || 0, borrowUsd: b.totalBorrowUsd || 0 };
   });
   const byChain = {};
@@ -238,7 +275,7 @@ function hideTT() { $("tt").style.opacity = 0; }
             ltv: ltvRaw, lt, conf, assumed: conf === "unverified", emodeAsof: ve ? ve.asof : null,
             maxLev: ltvRaw ? 1 / (1 - ltvRaw) : 10, avail, util, collTvl: cm.tvl,
             collSupplyUsd: cm.supplyUsd, collAvail: Math.max(0, cm.supplyUsd - cm.borrowUsd),
-            borrowSupplyUsd: bm.supplyUsd, borrowUsd: bm.borrowUsd, borrowSupplyBaseNow: bm.supplyBase,
+            borrowSupplyUsd: bm.supplyUsd, borrowUsd: bm.borrowUsd, borrowSupplyBaseNow: bm.supplyBase, borrowUnder: bm.under,
             key: chain + "|" + cs + "|" + bs, intrPool: intr[cs].pool, collPool: cm.pool, borrowPool: bm.pool });
         }
       }
@@ -306,6 +343,78 @@ async function fillStreaks(rows) {
   await Promise.all([0, 1, 2, 3, 4].map(worker));
 }
 
+// ---- on-chain IRM curve (verified: getReserveData 0x35ea6a75 -> strategy.getInterestRateData 0x131e889c) ----
+const IRM = {};
+async function irmOf(r) {
+  const cfg = POOLCFG[r.chain];
+  if (!cfg || !r.borrowUnder) return { err: "no on-chain config for this chain" };
+  if (r.bs === "GHO" && r.chain === "Ethereum") return { err: "GHO Core is governance-priced, not a utilization curve" };
+  const ck = r.chain + "|" + r.borrowUnder;
+  if (IRM[ck]) return IRM[ck];
+  const rd = await rpcCall(cfg.rpc, cfg.pool, "0x35ea6a75" + pad(r.borrowUnder));
+  if (!rd) return IRM[ck] = { err: "reserve read failed" };
+  const strat = wAddr(word(rd, 11)), debtTok = wAddr(word(rd, 10)), bChain = wRayPct(word(rd, 4));
+  const [ird, dts, virt] = await Promise.all([
+    rpcCall(cfg.rpc, strat, "0x131e889c" + pad(r.borrowUnder)),
+    rpcCall(cfg.rpc, debtTok, "0x18160ddd"),
+    rpcCall(cfg.rpc, cfg.pool, "0x6fb07f96" + pad(r.borrowUnder)),
+  ]);
+  if (!ird || !dts || !virt) return IRM[ck] = { err: "strategy read failed" };
+  const kink = wRayPct(word(ird, 0)) / 100, base = wRayPct(word(ird, 1)), s1 = wRayPct(word(ird, 2)), s2 = wRayPct(word(ird, 3));
+  const debt = wNum(word(dts, 0)), vb = wNum(word(virt, 0));
+  const u = debt + vb > 0 ? debt / (debt + vb) : 0;
+  const bAt = uu => uu <= kink ? base + s1 * uu / kink : base + s1 + s2 * (uu - kink) / (1 - kink);
+  const ok = bChain != null && Math.abs(bAt(u) - bChain) < 0.05;
+  return IRM[ck] = { kink, base, s1, s2, u, bNow: bChain, mkt: (debt + vb), ok };
+}
+function bAtOf(m) { return uu => uu <= m.kink ? m.base + m.s1 * uu / m.kink : m.base + m.s1 + m.s2 * (uu - m.kink) / (1 - m.kink); }
+function irmCharts(r, m) {
+  const L = levOf(r), bAt = bAtOf(m), sNow = econOf(r, L).s;
+  const dU = x => Math.min(0.999, m.u + x / Math.max(r.borrowSupplyUsd, 1));
+  const borrowNeed = SIZE * (L - 1), uPost = dU(borrowNeed), bPost = bAt(uPost);
+  const netAt = x => sNow * L - bAt(dU(x)) * (L - 1);
+  const W = 470, H = 190, pl = 44, pr = 12, pt = 12, pb = 26;
+  const maxY = Math.max(m.base + m.s1 + m.s2, bPost) * 1.05, y = v => pt + (H - pt - pb) * (1 - v / maxY), x = u => pl + (W - pl - pr) * u;
+  let c1 = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:480px;display:block">`;
+  for (const g of [0, 0.25, 0.5, 0.75, 1]) c1 += `<text x="${x(g)}" y="${H - 8}" fill="var(--muted)" font-size="9.5" text-anchor="middle">${g * 100}%</text>`;
+  for (let g = 0; g <= maxY; g += maxY > 20 ? 10 : maxY > 8 ? 5 : 2) c1 += `<line x1="${pl}" y1="${y(g)}" x2="${W - pr}" y2="${y(g)}" stroke="var(--hairline)"/><text x="${pl - 5}" y="${y(g) + 3}" fill="var(--muted)" font-size="9.5" text-anchor="end">${g}%</text>`;
+  let d = "";
+  for (let i = 0; i <= 120; i++) { const uu = i / 120; d += (i ? "L" : "M") + x(uu).toFixed(1) + " " + y(bAt(uu)).toFixed(1); }
+  c1 += `<line x1="${x(m.kink)}" y1="${pt}" x2="${x(m.kink)}" y2="${H - pb}" stroke="var(--rule)" stroke-dasharray="4 4"/><text x="${x(m.kink)}" y="${pt + 2}" fill="var(--ink-2)" font-size="9.5" text-anchor="middle">kink ${(m.kink * 100).toFixed(0)}%</text>`;
+  c1 += `<path d="${d}" fill="none" stroke="var(--accent)" stroke-width="1.6"/>`;
+  c1 += `<circle cx="${x(m.u)}" cy="${y(bAt(m.u))}" r="3.5" fill="var(--ink)"/><text x="${x(m.u) + 6}" y="${y(bAt(m.u)) - 6}" fill="var(--ink)" font-size="10">now ${(m.u * 100).toFixed(1)}% - ${bAt(m.u).toFixed(2)}%</text>`;
+  c1 += `<circle cx="${x(uPost)}" cy="${y(bPost)}" r="3.5" fill="${uPost > m.kink ? "var(--crit)" : "var(--warn)"}"/><text x="${Math.min(x(uPost) + 6, W - 105)}" y="${y(bPost) + 12}" fill="${uPost > m.kink ? "var(--crit)" : "var(--warn)"}" font-size="10">+you ${(uPost * 100).toFixed(1)}% - ${bPost.toFixed(2)}%</text>`;
+  c1 += `</svg>`;
+  const xMax = Math.max(SIZE * 2, ((m.kink - m.u) * r.borrowSupplyUsd / Math.max(L - 1, 0.05)) * 1.4, 1e6);
+  const W2 = 470, y2max = Math.max(netAt(0) * 1.05, 0.1), y2min = Math.min(0, netAt(xMax)) * 1.05;
+  const y2 = v => pt + (H - pt - pb) * (1 - (v - y2min) / (y2max - y2min)), x2 = v => pl + (W2 - pl - pr) * v / xMax;
+  let c2 = `<svg viewBox="0 0 ${W2} ${H}" style="width:100%;max-width:480px;display:block">`;
+  for (const g of [0, 0.25, 0.5, 0.75, 1]) c2 += `<text x="${x2(g * xMax)}" y="${H - 8}" fill="var(--muted)" font-size="9.5" text-anchor="middle">${fmt$(g * xMax)}</text>`;
+  c2 += `<line x1="${pl}" y1="${y2(0)}" x2="${W2 - pr}" y2="${y2(0)}" stroke="var(--rule)"/>`;
+  for (const g of [y2max, y2max / 2]) c2 += `<text x="${pl - 5}" y="${y2(g) + 3}" fill="var(--muted)" font-size="9.5" text-anchor="end">${g.toFixed(0)}%</text>`;
+  let d2 = "";
+  for (let i = 0; i <= 120; i++) { const xx = xMax * i / 120; d2 += (i ? "L" : "M") + x2(xx).toFixed(1) + " " + y2(netAt(xx)).toFixed(1); }
+  c2 += `<path d="${d2}" fill="none" stroke="var(--good)" stroke-width="1.6"/>`;
+  c2 += `<circle cx="${x2(SIZE)}" cy="${y2(netAt(SIZE))}" r="3.5" fill="var(--ink)"/><text x="${Math.min(x2(SIZE) + 6, W2 - 135)}" y="${y2(netAt(SIZE)) - 7}" fill="var(--ink)" font-size="10">your ${fmt$(SIZE)} - ${netAt(SIZE).toFixed(2)}%</text>`;
+  c2 += `</svg>`;
+  const dBp = (bPost - bAt(m.u)) * 100;
+  return `<div class="pgrid" style="margin-top:12px">
+    <div class="pblock"><div class="ph">Borrow-rate curve - ${r.bs} on ${r.chain} ${m.ok ? '<span class="ok" style="font-weight:400">(reproduces on-chain rate)</span>' : ""}</div>${c1}
+      <div style="margin-top:4px">on-chain: kink ${(m.kink * 100).toFixed(0)}% - slope1 ${m.s1.toFixed(2)}% - slope2 ${m.s2.toFixed(0)}%${m.base ? " - base " + m.base.toFixed(2) + "%" : ""}</div></div>
+    <div class="pblock"><div class="ph">Net APY vs deposit size at ${L.toFixed(1)}x - your whole debt reprices as utilization climbs</div>${c2}
+      <div style="margin-top:4px">your ${fmt$(SIZE)} moves the borrow rate <b>${bAt(m.u).toFixed(2)}% -> ${bPost.toFixed(2)}%</b> (+${dBp.toFixed(0)}bp)${uPost > m.kink ? ' - <span class="bad">crosses the kink</span>' : ""}</div></div>
+  </div>`;
+}
+async function initIRM(r) {
+  const id = "irm-" + r.key.replace(/[^a-zA-Z0-9]/g, "");
+  if (!document.getElementById(id)) return;
+  const m = await irmOf(r);
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (m.err) { el.innerHTML = `<div style="color:var(--muted);font-size:12px;margin-top:10px">rate curve unavailable: ${m.err}</div>`; return; }
+  el.innerHTML = irmCharts(r, m);
+}
+
 // ---- detail panel ----
 function panelHtml(r) {
   const L = levOf(r), v = econOf(r, L);
@@ -358,6 +467,7 @@ function panelHtml(r) {
         <div style="max-width:46ch">${mint.note}</div>
         ${fl.length ? '<div style="margin-top:6px">' + fl.join("<br>") + "</div>" : ""}</div>
     </div>
+    <div id="irm-${r.key.replace(/[^a-zA-Z0-9]/g, "")}"><div class="skel" style="margin-top:10px">reading this market's rate curve on-chain...</div></div>
     <div class="levrow">Adjust leverage
       <input type="range" min="1.05" max="${r.maxLev.toFixed(2)}" step="0.05" value="${L.toFixed(2)}" data-lev="${r.key}">
       <input type="text" value="${L.toFixed(2)}" data-levin="${r.key}" style="width:56px;text-align:right">
@@ -418,6 +528,7 @@ function render() {
     });
   });
   $("out").querySelectorAll("tr.detail").forEach(tr => tr.addEventListener("click", e => e.stopPropagation()));
+  if (EXP) { const er = rows.find(x => x.key === EXP); if (er) initIRM(er); }
   fillStreaks(rows);
 }
 
