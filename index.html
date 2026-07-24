@@ -76,13 +76,20 @@
   <div class="masthead">
     <div>
       <div class="eyebrow">Curation research</div>
-      <h1>Aave loop scanner</h1>
+      <h1>DeFi loop scanner</h1>
     </div>
     <div class="asof" id="asof">loading…</div>
   </div>
-  <p class="sub">Every viable looping pair on Aave v3, across every deployment. Set your deposit size and leverage: each row prices the loop at your inputs and checks the liquidity can absorb you. Click a row for the full breakdown — sizing vs the market, mint-vs-buy routes for the collateral, health factor and carry history.</p>
+  <p class="sub">Every viable looping pair across lending venues and chains. Set your deposit size and leverage: each row prices the loop at your inputs and checks the liquidity can absorb you. Click a row for the full breakdown — sizing vs the market, mint-vs-buy routes for the collateral, health factor and carry history.</p>
 
   <div class="controls">
+    <span class="ctl-lbl">Protocol</span>
+    <select id="protoSel">
+      <option value="aave_v3">Aave v3</option>
+      <option value="morpho">Morpho</option>
+      <option value="spark">Spark</option>
+      <option value="pt">Pendle PT</option>
+    </select>
     <span class="ctl-lbl">Deposit</span>
     <input type="text" id="sizeIn" value="5,000,000">
     <span class="ctl-lbl">Leverage</span>
@@ -116,9 +123,10 @@
     </div>
   </div>
 
-  <div id="out"><div class="skel">Fetching Aave markets across all chains…</div></div>
+  <div class="sub" id="protoNote" style="margin-top:-4px;margin-bottom:14px"></div>
+  <div id="out"><div class="skel">Fetching markets across venues and chains…</div></div>
 
-  <footer>Data: DefiLlama pools + lendBorrow, fetched in-browser on each load; intrinsic collateral yields from each asset's own source pool. LTV — reported by the API, or marked ᵉ where we verified the e-mode on-chain (dated in the panel). Rows showing — with a 'verify e-mode' flag have no reported LTV (e-mode-only or collateral-disabled): they price at a 3× reference and need manual verification before sizing. Post-trade utilization ignores the rate response (IRM params aren't public API data): crossing the kink will spike the borrow rate beyond what's shown. Streak = consecutive days the estimated base carry stayed positive (90-day lookback; borrow-leg history estimated from the borrow pool's supply-rate history). Not investment advice.</footer>
+  <footer>Venues: Aave v3 (on-chain IRM + verified e-modes), Morpho isolated markets, Spark, and Pendle-PT loops (fixed implied APY from the Pendle API; Aave PT rows only where the e-mode was verified on-chain). Data: DefiLlama pools + lendBorrow, fetched in-browser on each load; intrinsic collateral yields from each asset's own source pool. LTV — reported by the API, or marked ᵉ where we verified the e-mode on-chain (dated in the panel). Rows showing — with a 'verify e-mode' flag have no reported LTV (e-mode-only or collateral-disabled): they price at a 3× reference and need manual verification before sizing. Post-trade utilization ignores the rate response (IRM params aren't public API data): crossing the kink will spike the borrow rate beyond what's shown. Streak = consecutive days the estimated base carry stayed positive (90-day lookback; borrow-leg history estimated from the borrow pool's supply-rate history). Not investment advice.</footer>
 </div>
 <div class="tt" id="tt" style="position:fixed;pointer-events:none;background:var(--surface);border:1px solid var(--rule);padding:8px 11px;font-size:12px;opacity:0;z-index:50;color:var(--ink);max-width:380px;white-space:normal"></div>
 
@@ -204,7 +212,7 @@ const EXITT = {
 const ETH_COLL = ["WSTETH","WEETH","RSETH","RETH","CBETH","EZETH","SFRXETH","OSETH"];
 const ETH_BORROW = ["WETH","ETH"];
 const USD_COLL = ["SUSDE","SUSDS","SDAI","SAVUSD","SYRUPUSDC","SYRUPUSDT"];
-const USD_BORROW = ["USDC","USDT","USDT0","DAI","GHO","USDE","AUSD","MUSD","USDC.E"];
+const USD_BORROW = ["USDC","USDT","USDT0","DAI","GHO","USDE","AUSD","MUSD","USDC.E","PYUSD","RLUSD","USDTB","USDS","USR"];
 // e-modes we have personally verified on-chain (date-labeled); everything else with API ltv=0
 // is shown at a 3x reference leverage with a verify flag instead of a fabricated max.
 const VERIFIED_EMODE = {
@@ -214,8 +222,40 @@ const VERIFIED_EMODE = {
   "Ethereum|WSTETH":  { ltv: 0.93, lt: 0.95, borrow: ["WETH"], exhaustive: false, asof: "on-chain 2026-07-18 (ETH-correlated)" },
 };
 const REF_LEV = 3;
+// Lending venues. model "pooled" = shared reserves, any collateral borrows any borrowable
+// asset (Aave-style cross-product); "pair" = isolated markets, each row is one collateral->loan
+// pair with a single LLTV (Morpho-style). emode: apply the on-chain-verified e-mode overlay
+// (Aave only). irm: read the borrow-rate curve on-chain (wired for Aave v3 only).
+const PROTO = {
+  aave_v3: { key: "aave_v3", label: "Aave v3", slug: "aave-v3", model: "pooled", emode: true, irm: true,
+             note: "Baseline. Shared-pool reserves with e-modes; borrow-rate curves are read live on-chain." },
+  morpho:  { key: "morpho", label: "Morpho", slug: "morpho-blue", model: "pair", emode: false, irm: false,
+             note: "Isolated markets — each row is one collateral→loan pair with a single LLTV, so max leverage and the liquidation line coincide (no LT cushion). Bad debt is socialised to that market's lenders; liquidations carry no close factor." },
+  spark:   { key: "spark", label: "Spark", slug: "sparklend", model: "pooled", emode: false, irm: false,
+             note: "Aave-v3 fork, Ethereum only. Same shared-pool model; the on-chain rate read is wired for Aave v3, so curve params aren't drawn here yet." },
+  pt:      { key: "pt", label: "Pendle PT", slug: null, model: "pt", emode: false, irm: false,
+             note: "Fixed-rate PT collateral levered against a floating borrow, across venues (Morpho, Aave e-modes, Curvance). Net = fixed·L − borrow·(L−1). Held to maturity the PT redeems 1:1 at par; early exit trades through the Pendle AMM. Aave rows appear only where we verified the PT e-mode on-chain — nothing is inferred." },
+};
+// Pendle chains with active markets (api-v2.pendle.finance, verified 2026-07-24) -> DefiLlama chain names
+const PENDLE_CHAINS = { 1: "Ethereum", 42161: "Arbitrum", 56: "BSC", 8453: "Base", 999: "Hyperliquid", 9745: "Plasma", 143: "Monad" };
+// Aave v3 PT e-modes verified by live eth_call 2026-07-24 (getEModeCategoryCollateralConfig /
+// ...Bitmap). PT collateral on Aave works ONLY through e-modes, so rows without a verified
+// entry are skipped rather than guessed.
+const AAVE_PT_EMODE = {
+  "Plasma|PT-SUSDE-22OCT2026": [
+    { bs: "USDE",  ltv: 0.9055, lt: 0.9255, cat: "e26" },
+    { bs: "USDT0", ltv: 0.8791, lt: 0.8991, cat: "e25" },
+    { bs: "GHO",   ltv: 0.8791, lt: 0.8991, cat: "e25" },
+  ],
+  "Ethereum|PT-SRUSDE-22OCT2026": [
+    { bs: "USDE", ltv: 0.9126, lt: 0.9326, cat: "e48" },
+    { bs: "USDC", ltv: 0.8862, lt: 0.9062, cat: "e47" },
+    { bs: "USDT", ltv: 0.8862, lt: 0.9062, cat: "e47" },
+  ],
+};
 
 let ROWS = [], CAT = "all", CHAIN = "all", MINLIQ = 1, REW = 1, GLEV = "safe", GCUST = null, SIZE = 5e6, EXP = null;
+let POOLS, LB, INTR, INTRCHAIN, BYID, PROTO_SEL = "aave_v3", PENDLE = null, rebuildTok = 0;
 const CUSTL = {};   // per-row custom leverage from the panel slider
 
 function showTT(e, html) { const t = $("tt"); t.innerHTML = html; t.style.opacity = 1;
@@ -244,8 +284,15 @@ function hideTT() { $("tt").style.opacity = 0; }
   { const g = pools.filter(x => x.project === "sdai" && x.chain === "Gnosis").sort((a, b) => b.tvlUsd - a.tvlUsd)[0];
     if (g) intrChain["Gnosis|SDAI"] = { apy: g.apy || 0, src: "sdai (gnosis)", pool: g.pool }; }
 
-  const aave = pools.filter(p => p.project === "aave-v3" && !(p.chain === "Ethereum" && p.poolMeta)).map(p => {
-    const b = lb[p.pool] || {};
+  POOLS = pools; LB = lb; INTR = intr; INTRCHAIN = intrChain; BYID = byId;
+  rebuild();
+})().catch(e => { $("out").innerHTML = `<p class="skel">Failed to load DefiLlama data — refresh to retry. (${e.message})</p>`; });
+
+// ---- market assembly, per protocol ----
+function buildPooled(proto) {
+  const rows = [];
+  const mk = POOLS.filter(p => p.project === proto.slug && !(proto.slug === "aave-v3" && p.chain === "Ethereum" && p.poolMeta)).map(p => {
+    const b = LB[p.pool] || {};
     return { chain: p.chain, sym: p.symbol.toUpperCase(), pool: p.pool,
       supplyBase: p.apyBase || 0, supplyRew: p.apyReward || 0, tvl: p.tvlUsd || 0,
       ltv: b.ltv || 0, borrowable: b.borrowable !== false,
@@ -254,15 +301,13 @@ function hideTT() { $("tt").style.opacity = 0; }
       supplyUsd: b.totalSupplyUsd || p.tvlUsd || 0, borrowUsd: b.totalBorrowUsd || 0 };
   });
   const byChain = {};
-  aave.forEach(m => { const c = byChain[m.chain] = byChain[m.chain] || {};
+  mk.forEach(m => { const c = byChain[m.chain] = byChain[m.chain] || {};
     if (!c[m.sym] || m.supplyUsd > c[m.sym].supplyUsd) c[m.sym] = m; });
-
-  ROWS = [];
   for (const [chain, mkts] of Object.entries(byChain)) {
     for (const [cat, colls, borrows] of [["eth", ETH_COLL, ETH_BORROW], ["usd", USD_COLL, USD_BORROW]]) {
       for (const cs of colls) {
         const cm = mkts[cs];
-        const intrX = intrChain[chain + "|" + cs] || intr[cs];
+        const intrX = INTRCHAIN[chain + "|" + cs] || INTR[cs];
         if (!cm || cm.tvl < 2e5 || !intrX) continue;
         for (const bs of borrows) {
           const bm = mkts[bs];
@@ -270,28 +315,156 @@ function hideTT() { $("tt").style.opacity = 0; }
           const avail = Math.max(0, bm.supplyUsd - bm.borrowUsd);
           if (avail < 1e5) continue;
           const util = bm.supplyUsd ? bm.borrowUsd / bm.supplyUsd * 100 : null;
-          const ve = VERIFIED_EMODE[chain + "|" + cs];
-          const dust = !(cm.ltv >= 0.05);              // ltv 0 or dust = not usable standard collateral
+          const ve = proto.emode ? VERIFIED_EMODE[chain + "|" + cs] : null;
+          const dust = !(cm.ltv >= 0.05);
           let ltvRaw, lt, conf;
           if (ve && ve.borrow.includes(bs)) { ltvRaw = ve.ltv; lt = ve.lt; conf = "emode"; }
-          else if (ve && ve.exhaustive && dust) continue;   // verified: no e-mode allows this borrow -> impossible pair
+          else if (ve && ve.exhaustive && dust) continue;
           else if (!dust) { ltvRaw = cm.ltv; lt = Math.min(0.98, cm.ltv + 0.02); conf = "api"; }
           else { ltvRaw = null; lt = null; conf = "unverified"; }
-          ROWS.push({ chain, cat, cs, bs, intr: intrX.apy, intrSrc: intrX.src,
+          rows.push({ proto: proto.key, model: "pooled", irm: !!proto.irm,
+            chain, cat, cs, bs, intr: intrX.apy, intrSrc: intrX.src,
             supplyBase: cm.supplyBase, sRew: cm.supplyRew, bBase: bm.borrowBase, bRew: bm.borrowRew,
             ltv: ltvRaw, lt, conf, assumed: conf === "unverified", emodeAsof: ve ? ve.asof : null,
             maxLev: ltvRaw ? Math.max(1.1, 1 / (1 - ltvRaw)) : 5, avail, util, collTvl: cm.tvl,
             collSupplyUsd: cm.supplyUsd, collAvail: Math.max(0, cm.supplyUsd - cm.borrowUsd),
             borrowSupplyUsd: bm.supplyUsd, borrowUsd: bm.borrowUsd, borrowSupplyBaseNow: bm.supplyBase, borrowUnder: bm.under, collUnder: cm.under,
-            key: chain + "|" + cs + "|" + bs, intrPool: intrX.pool, collPool: cm.pool, borrowPool: bm.pool });
+            key: proto.key + "|" + chain + "|" + cs + "|" + bs, intrPool: intrX.pool, collPool: cm.pool, borrowPool: bm.pool });
         }
       }
     }
   }
+  return rows;
+}
+function buildPairs(proto) {
+  const rows = [];
+  POOLS.filter(p => p.project === proto.slug).forEach(p => {
+    const b = LB[p.pool];
+    if (!b || b.apyBaseBorrow == null || !b.mintedCoin) return;         // needs a real borrow leg + named loan asset
+    const cs = p.symbol.toUpperCase(), bs = String(b.mintedCoin).toUpperCase();
+    if (cs === bs) return;
+    const intrX = INTRCHAIN[p.chain + "|" + cs] || INTR[cs];
+    if (!intrX) return;                                                  // only collateral whose yield we can source
+    const collIsEth = ETH_COLL.includes(cs) || cs.endsWith("ETH");
+    const loanOk = collIsEth ? ETH_BORROW.includes(bs) : USD_BORROW.includes(bs);
+    if (!loanOk) return;                                                 // correlated loops only (no directional price risk)
+    const ltv = b.ltv || 0;
+    if (ltv < 0.05) return;
+    const supplyUsd = b.totalSupplyUsd || p.tvlUsd || 0, borrowUsd = b.totalBorrowUsd || 0;
+    const avail = (b.debtCeilingUsd != null && b.debtCeilingUsd > 0) ? b.debtCeilingUsd : Math.max(0, supplyUsd - borrowUsd);
+    if (avail < 1e5) return;
+    const util = supplyUsd ? borrowUsd / supplyUsd * 100 : null;
+    rows.push({ proto: proto.key, model: "pair", irm: false,
+      chain: p.chain, cat: collIsEth ? "eth" : "usd", cs, bs, intr: intrX.apy, intrSrc: intrX.src,
+      supplyBase: 0, sRew: 0, bBase: b.apyBaseBorrow, bRew: b.apyRewardBorrow || 0,
+      ltv, lt: ltv, conf: "api", assumed: false, emodeAsof: null,
+      maxLev: Math.max(1.1, 1 / (1 - ltv)), avail, util, collTvl: null,
+      collSupplyUsd: null, collAvail: null,
+      borrowSupplyUsd: supplyUsd, borrowUsd, borrowSupplyBaseNow: (p.apyBase != null ? p.apyBase : null), borrowUnder: null, collUnder: null,
+      key: proto.key + "|" + p.chain + "|" + cs + "|" + bs + "|" + p.pool.slice(0, 6),
+      intrPool: intrX.pool, collPool: null, borrowPool: p.pool });
+  });
+  // keep the deepest-liquidity market when the same collateral/loan pair appears twice on a chain
+  const best = {};
+  for (const r of rows) { const k = r.chain + "|" + r.cs + "|" + r.bs; if (!best[k] || r.avail > best[k].avail) best[k] = r; }
+  return Object.values(best);
+}
+async function pendleLoad() {
+  if (PENDLE) return PENDLE;
+  const ids = Object.keys(PENDLE_CHAINS);
+  const res = await Promise.all(ids.map(id =>
+    fetch("https://api-v2.pendle.finance/core/v1/" + id + "/markets/active").then(r => r.json()).catch(() => null)));
+  PENDLE = {};
+  res.forEach((j, i) => ((j && j.markets) || []).forEach(m => {
+    const pt = String(m.pt || "").toLowerCase();
+    if (!pt || !m.details) return;
+    PENDLE[pt] = { name: m.name, expiry: m.expiry,
+      implied: m.details.impliedApy != null ? m.details.impliedApy * 100 : null,
+      amm: m.details.liquidity || 0 };
+  }));
+  return PENDLE;
+}
+function buildPT() {
+  const rows = [], name2id = {};
+  for (const [id, nm] of Object.entries(PENDLE_CHAINS)) name2id[nm] = id;
+  const aaveBy = {};   // chain|SYM -> deepest aave-v3 pool row (for the borrow leg of curated PT e-modes)
+  POOLS.filter(p => p.project === "aave-v3" && !(p.chain === "Ethereum" && p.poolMeta)).forEach(p => {
+    const k = p.chain + "|" + p.symbol.toUpperCase(), b = LB[p.pool];
+    if (!aaveBy[k] || (b && (b.totalSupplyUsd || 0) > ((LB[aaveBy[k].pool] || {}).totalSupplyUsd || 0))) aaveBy[k] = p;
+  });
+  for (const p of POOLS) {
+    const sym = p.symbol.toUpperCase();
+    if (!sym.startsWith("PT-")) continue;
+    const b = LB[p.pool];
+    if (!b || !b.underlyingTokens || !b.underlyingTokens[0]) continue;
+    const id = name2id[p.chain]; if (!id) continue;
+    const pd = PENDLE[id + "-" + b.underlyingTokens[0].toLowerCase()];
+    if (!pd || pd.implied == null) continue;
+    const days = Math.round((Date.parse(pd.expiry) - Date.now()) / 864e5);
+    if (!(days > 0)) continue;
+    const ptInfo = { days, amm: pd.amm, expiryStr: new Date(pd.expiry).toISOString().slice(0, 10) };
+    if (p.project === "aave-v3") {
+      const cur = AAVE_PT_EMODE[p.chain + "|" + sym];
+      if (!cur) continue;   // PT on Aave is e-mode-only; no verified e-mode -> no row
+      for (const em of cur) {
+        const bp = aaveBy[p.chain + "|" + em.bs], bb = bp && LB[bp.pool];
+        if (!bb || bb.apyBaseBorrow == null) continue;
+        const supplyUsd = bb.totalSupplyUsd || 0, borrowUsd = bb.totalBorrowUsd || 0, avail = Math.max(0, supplyUsd - borrowUsd);
+        if (avail < 1e5) continue;
+        rows.push({ proto: "pt", venue: "aave", model: "pair", irm: true, pt: ptInfo,
+          chain: p.chain, cat: ETH_BORROW.includes(em.bs) ? "eth" : "usd", cs: sym, bs: em.bs,
+          intr: pd.implied, intrSrc: "Pendle implied (fixed to maturity)",
+          supplyBase: 0, sRew: 0, bBase: bb.apyBaseBorrow, bRew: bb.apyRewardBorrow || 0,
+          ltv: em.ltv, lt: em.lt, conf: "emode", assumed: false, emodeAsof: "on-chain 2026-07-24 (" + em.cat + ")",
+          maxLev: Math.max(1.1, 1 / (1 - em.ltv)), avail, util: supplyUsd ? borrowUsd / supplyUsd * 100 : null,
+          collTvl: p.tvlUsd || 0, collSupplyUsd: null, collAvail: null,
+          borrowSupplyUsd: supplyUsd, borrowUsd, borrowSupplyBaseNow: null,
+          borrowUnder: (bb.underlyingTokens && bb.underlyingTokens[0]) || null, collUnder: null,
+          key: ["pt", p.chain, sym, em.bs].join("|"), intrPool: null, collPool: p.pool, borrowPool: bp.pool });
+      }
+    } else {
+      if (b.apyBaseBorrow == null || !b.mintedCoin) continue;
+      const ltv = b.ltv || 0; if (ltv < 0.5) continue;
+      const bs = String(b.mintedCoin).toUpperCase(); if (bs === sym) continue;
+      const supplyUsd = b.totalSupplyUsd || p.tvlUsd || 0, borrowUsd = b.totalBorrowUsd || 0;
+      const avail = (b.debtCeilingUsd != null && b.debtCeilingUsd > 0) ? b.debtCeilingUsd : Math.max(0, supplyUsd - borrowUsd);
+      if (avail < 1e5) continue;
+      const venue = p.project === "morpho-blue" ? "morpho" : p.project === "curvance" ? "curvance" : p.project;
+      rows.push({ proto: "pt", venue, model: "pair", irm: false, pt: ptInfo,
+        chain: p.chain, cat: ETH_BORROW.includes(bs) ? "eth" : "usd", cs: sym, bs,
+        intr: pd.implied, intrSrc: "Pendle implied (fixed to maturity)",
+        supplyBase: 0, sRew: 0, bBase: b.apyBaseBorrow, bRew: b.apyRewardBorrow || 0,
+        ltv, lt: ltv, conf: "api", assumed: false, emodeAsof: null,
+        maxLev: Math.max(1.1, 1 / (1 - ltv)), avail, util: supplyUsd ? borrowUsd / supplyUsd * 100 : null,
+        collTvl: null, collSupplyUsd: null, collAvail: null,
+        borrowSupplyUsd: supplyUsd, borrowUsd, borrowSupplyBaseNow: null, borrowUnder: null, collUnder: null,
+        key: ["pt", p.chain, sym, bs, p.pool.slice(0, 6)].join("|"), intrPool: null, collPool: null, borrowPool: p.pool });
+    }
+  }
+  const best = {};
+  for (const r of rows) { const k = r.chain + "|" + r.cs + "|" + r.bs; if (!best[k] || r.avail > best[k].avail) best[k] = r; }
+  return Object.values(best);
+}
+function buildRows() {
+  const proto = PROTO[PROTO_SEL] || PROTO.aave_v3;
+  return proto.model === "pt" ? buildPT() : proto.model === "pair" ? buildPairs(proto) : buildPooled(proto);
+}
+async function rebuild() {
+  const tok = ++rebuildTok;
+  const proto = PROTO[PROTO_SEL] || PROTO.aave_v3;
+  if (proto.model === "pt" && !PENDLE) {
+    $("out").innerHTML = '<div class="skel">Fetching Pendle markets across chains…</div>';
+    try { await pendleLoad(); } catch (e) { PENDLE = {}; }
+    if (tok !== rebuildTok) return;
+  }
+  ROWS = buildRows();
+  const note = $("protoNote"); if (note) note.textContent = proto.label + " — " + proto.note;
   const chains = [...new Set(ROWS.map(r => r.chain))].sort();
+  const cur = CHAIN;
   $("chainSel").innerHTML = '<option value="all">All chains</option>' + chains.map(c => `<option>${c}</option>`).join("");
+  if (chains.includes(cur)) $("chainSel").value = cur; else CHAIN = "all";
   render();
-})().catch(e => { $("out").innerHTML = `<p class="skel">Failed to load DefiLlama data — refresh to retry. (${e.message})</p>`; });
+}
 
 // effective leverage + economics at current settings
 function levOf(r) {
@@ -300,7 +473,7 @@ function levOf(r) {
   else if (GCUST) L = Math.min(GCUST, r.maxLev);
   else if (r.conf === "unverified") L = Math.min(REF_LEV, r.maxLev);
   else if (GLEV === "max") L = r.maxLev;
-  else if (GLEV === "safe") L = Math.min(r.maxLev * 0.75, 10);
+  else if (GLEV === "safe") L = r.model === "pair" ? Math.min(1 / (1 - 0.8 * r.ltv), r.maxLev) : Math.min(r.maxLev * 0.75, 10);
   else L = Math.min(+GLEV, r.maxLev);
   return Math.max(1.05, L);
 }
@@ -324,13 +497,13 @@ function chartOf(pool, field) {
 }
 async function streakOf(r) {
   if (r.borrowSupplyBaseNow == null || r.borrowSupplyBaseNow < 0.03) return null;
-  const [ic, sc, bc] = await Promise.all([chartOf(r.intrPool, "apy"), chartOf(r.collPool, "base"), chartOf(r.borrowPool, "base")]);
+  const [ic, sc, bc] = await Promise.all([chartOf(r.intrPool, "apy"), r.collPool ? chartOf(r.collPool, "base") : Promise.resolve({}), chartOf(r.borrowPool, "base")]);
   if (!ic || !sc || !bc) return null;
   const scale = r.bBase / r.borrowSupplyBaseNow;
   const dates = Object.keys(bc).sort().reverse().slice(0, 92);
   let days = 0, seen = 0;
   for (const d of dates) {
-    const i = ic[d], su = sc[d], bp = bc[d];
+    const i = ic[d], su = r.collPool ? sc[d] : 0, bp = bc[d];
     if (i == null || su == null || bp == null) continue;
     seen++;
     if (i + su - bp * scale > 0) days++; else break;
@@ -457,42 +630,53 @@ function panelHtml(r) {
   const exitFoot = wSS > 0 ? gross / wSS * 100 : Infinity;
   const ltEff = r.lt != null ? r.lt : Math.min(0.98, (L - 1) / L + 0.05);
   const posLtv = (L - 1) / L, hf = ltEff * L / (L - 1), buf = 1 - posLtv / ltEff;
-  const mint = MINT[r.cs] || { m: "?", note: "" };
+  const mint = r.pt
+    ? { m: "buy the PT on Pendle — AMM liquidity " + fmt$(r.pt.amm),
+        note: "The AMM is both entry and early-exit venue. Before maturity the PT price moves with the implied rate (ΔP ≈ −T·Δy — you are short rates); at maturity (" + r.pt.expiryStr + ", " + r.pt.days + "d) it redeems 1:1 into the underlying at zero slippage." }
+    : MINT[r.cs] || { m: "?", note: "" };
   const fl = [];
   if (foot > 100) fl.push('<span class="bad">borrow need exceeds available liquidity</span>');
   else if (foot > 10) fl.push(`<span class="wr">you'd take ${foot.toFixed(0)}% of available liquidity (framework cap: 10%)</span>`);
   if (supFoot != null && supFoot > 20) fl.push(`<span class="wr">you'd be ${supFoot.toFixed(0)}% of the collateral market (cap: 20%)</span>`);
   if (postUtil != null && postUtil > 88) fl.push('<span class="bad">post-trade utilization crosses the kink zone — borrow rate will spike beyond what\'s shown</span>');
   if (r.chain !== "Ethereum") fl.push('<span class="wr">non-mainnet: collateral must be minted natively or bridged — add bridge trust + exit time</span>');
+  if (r.pt) {
+    fl.push(`fixed leg runs ${r.pt.days}d to ${r.pt.expiryStr} — net APY is annualized; ≈ <b>${(v.net * r.pt.days / 365).toFixed(1)}%</b> absolute if held to maturity`);
+    if (r.venue === "morpho") fl.push('<span class="wr">Morpho PT markets typically price via a linear-discount oracle (accretes to par): rate spikes do not trigger liquidations, but the AMM can trade below oracle — verify the oracle on the market page before sizing</span>');
+  }
   return `<div class="panel">
     <div class="pgrid">
       <div class="pblock"><div class="ph">Carry math at ${L.toFixed(1)}×</div>
-        <div>s = ${r.intr.toFixed(2)}% intrinsic (${r.intrSrc}) + ${r.supplyBase.toFixed(2)}% supply${REW && r.sRew ? ` + ${r.sRew.toFixed(2)}% rewards` : ""} = <b>${v.s.toFixed(2)}%</b></div>
+        <div>s = ${r.intr.toFixed(2)}% intrinsic (${r.intrSrc})${r.model === "pair" ? "" : ` + ${r.supplyBase.toFixed(2)}% supply`}${REW && r.sRew ? ` + ${r.sRew.toFixed(2)}% rewards` : ""} = <b>${v.s.toFixed(2)}%</b></div>
         <div>b = ${r.bBase.toFixed(2)}%${REW && r.bRew ? ` − ${r.bRew.toFixed(2)}% rewards` : ""} = <b>${v.b.toFixed(2)}%</b> · carry <b>${v.carry >= 0 ? "+" : ""}${v.carry.toFixed(2)}pp/turn</b></div>
         <div>net = s·L − b·(L−1) = <b>${v.net.toFixed(2)}%</b> on equity</div>
         <div>breakeven borrow <b>${(v.s / ((L - 1) / L)).toFixed(2)}%</b> · yearly on ${fmt$(SIZE)}: <b>${fmt$(SIZE * v.net / 100)}</b></div></div>
       <div class="pblock"><div class="ph">Size vs market — deposit ${fmt$(SIZE)}</div>
         <div>gross collateral <b>${fmt$(gross)}</b> · borrow need <b>${fmt$(borrowNeed)}</b></div>
-        <div>you'd be <b class="${supFoot > 20 ? "wr" : ""}">${supFoot != null ? supFoot.toFixed(1) + "%" : "—"}</b> of ${r.cs} supply (${fmt$(r.collSupplyUsd || r.collTvl)}) · <b class="${borShare > 20 ? "wr" : ""}">${borShare != null ? borShare.toFixed(1) + "%" : "—"}</b> of all ${r.bs} borrows</div>
+        ${r.model === "pair" ? `<div>isolated market — collateral is posted, not lent, so there is no collateral-supply share · your borrow is <b class="${borShare > 20 ? "wr" : ""}">${borShare != null ? borShare.toFixed(1) + "%" : "—"}</b> of this market's ${r.bs} debt</div>` : `<div>you'd be <b class="${supFoot > 20 ? "wr" : ""}">${supFoot != null ? supFoot.toFixed(1) + "%" : "—"}</b> of ${r.cs} supply (${fmt$(r.collSupplyUsd || r.collTvl || 0)}) · <b class="${borShare > 20 ? "wr" : ""}">${borShare != null ? borShare.toFixed(1) + "%" : "—"}</b> of all ${r.bs} borrows</div>`}
         <div>available to borrow <b>${fmt$(r.avail)}</b> → footprint <b class="${foot > 100 ? "bad" : foot > 10 ? "wr" : "ok"}">${isFinite(foot) ? foot.toFixed(0) + "%" : "—"}</b> (framework cap 10%)</div>
         <div>utilization ${r.util != null ? r.util.toFixed(0) : "—"}% → post-trade <b class="${postUtil > 88 ? "bad" : ""}">${postUtil != null ? postUtil.toFixed(0) + "%" : "—"}</b></div>
         <div>max deposit at ${L.toFixed(1)}×: <b class="${SIZE > maxDep ? "wr" : "ok"}">${isFinite(maxDep) ? fmt$(maxDep) : "—"}</b> <span style="color:var(--muted)">(binds at ${bindTag}; ≤20% of ${r.cs} supply = ${maxBySupply != null ? fmt$(maxBySupply) : "—"}, ≤10% of borrow liq = ${isFinite(maxByBorrow) ? fmt$(maxByBorrow) : "—"})</span></div></div>
       <div class="pblock"><div class="ph">Exit at size</div>
-        <div>day one: your own deposit adds ${fmt$(gross)} of un-borrowed liquidity → <b class="ok">self-funded exit</b></div>
+        ${r.model === "pair"
+          ? `<div>unwind = repay ${r.bs} debt <b>${fmt$(borrowNeed)}</b> → needs ${r.bs} liquidity, available <b>${fmt$(r.avail)}</b> (<b class="${foot > 100 ? "bad" : foot > 50 ? "wr" : "ok"}">${isFinite(foot) ? foot.toFixed(0) + "%" : "—"}</b>)</div>
+        <div>then ${r.pt ? "the PT leg" : "redeem / sell " + r.cs}: <b>${r.pt ? "redeems 1:1 at par on " + r.pt.expiryStr + "; early exit via Pendle AMM (" + fmt$(r.pt.amm) + ")" : EXITT[r.cs] || "—"}</b></div>
+        <div style="color:var(--muted)">${r.venue === "aave" ? "your PT is non-borrowable collateral — withdrawal is never liquidity-gated; unwind = repay the debt (liquidity above), withdraw the PT, sell or hold to par" : "isolated market: your collateral is posted, not lent — there is no self-funded exit off your own supply" + (r.venue === "morpho" ? ", and liquidations carry no close factor (up to 100% of the debt in one tx)" : "")}</div>`
+          : `<div>day one: your own deposit adds ${fmt$(gross)} of un-borrowed liquidity → <b class="ok">self-funded exit</b></div>
         <div>steady state (others borrow against your supply at the market's ${(uColl * 100).toFixed(0)}% utilization): withdrawable ≈ <b>${fmt$(wSS)}</b> → your gross = <b class="${exitFoot > 100 ? "bad" : exitFoot > 50 ? "wr" : "ok"}">${isFinite(exitFoot) ? exitFoot.toFixed(0) + "%" : "—"}</b>${exitFoot > 100 ? ` → unwind in <b>~${Math.ceil(exitFoot / 100)} tranches</b>` : ""}</div>
         <div>then redeem ${r.cs}: <b>${EXITT[r.cs] || "—"}</b></div>
-        <div style="color:var(--muted)">note: your borrow never draws on your own deposit — collateral and debt are different reserves; the borrow-side footprint above already reflects that</div></div>
+        <div style="color:var(--muted)">note: your borrow never draws on your own deposit — collateral and debt are different reserves; the borrow-side footprint above already reflects that</div>`}</div>
       <div class="pblock"><div class="ph">Risk at ${L.toFixed(1)}×</div>
-        <div>position LTV <b>${(posLtv * 100).toFixed(1)}%</b> vs LT <b>${(ltEff * 100).toFixed(1)}%${r.conf === "emode" ? "" : "≈"}</b>${r.emodeAsof ? ` <span style="color:var(--muted)">(${r.emodeAsof})</span>` : ""}</div>
+        <div>position LTV <b>${(posLtv * 100).toFixed(1)}%</b> vs ${r.lt != null && r.lt === r.ltv ? "LLTV" : "LT"} <b>${(ltEff * 100).toFixed(1)}%${r.conf === "emode" || r.model === "pair" ? "" : "≈"}</b>${r.emodeAsof ? ` <span style="color:var(--muted)">(${r.emodeAsof})</span>` : ""}</div>
         <div>health factor <b class="${hf < 1.05 ? "bad" : hf < 1.15 ? "wr" : "ok"}">${hf.toFixed(3)}</b> · liquidation on a <b>−${(buf * 100).toFixed(1)}%</b> collateral-vs-debt move</div>
-        <div>${r.conf === "unverified" ? "LTV not reported by the API — this asset may be e-mode-only or collateral-disabled here. Shown at a " + REF_LEV + "× reference; verify on the Aave UI before sizing." : `max leverage ${r.maxLev.toFixed(1)}× at LTV ${(r.ltv * 100).toFixed(0)}%${r.conf === "emode" ? " (verified e-mode)" : ""}`}</div>
+        <div>${r.model === "pair" && r.lt === r.ltv ? `single LLTV ${(r.ltv * 100).toFixed(1)}% — max leverage ${r.maxLev.toFixed(1)}× and the liquidation line coincide; no LT cushion${r.venue === "morpho" ? ", and bad debt is socialised to this market's lenders" : ""}` : r.conf === "unverified" ? "LTV not reported by the API — this asset may be e-mode-only or collateral-disabled here. Shown at a " + REF_LEV + "× reference; verify on the Aave UI before sizing." : `max leverage ${r.maxLev.toFixed(1)}× at LTV ${(r.ltv * 100).toFixed(0)}%${r.conf === "emode" ? " (verified e-mode)" : ""}`}</div>
         <div>carry streak <span data-sk="${r.key}">${r.streakTxt !== undefined ? r.streakTxt : "…"}</span> · <a href="https://defillama.com/yields/pool/${r.collPool}" target="_blank" rel="noopener">collateral pool</a> · <a href="https://defillama.com/yields/pool/${r.borrowPool}" target="_blank" rel="noopener">borrow pool</a></div></div>
       <div class="pblock"><div class="ph">Acquiring ${r.cs} at size — mint vs buy</div>
         <div>mint route: <b>${mint.m}</b></div>
         <div style="max-width:46ch">${mint.note}</div>
         ${fl.length ? '<div style="margin-top:6px">' + fl.join("<br>") + "</div>" : ""}</div>
     </div>
-    <div id="irm-${r.key.replace(/[^a-zA-Z0-9]/g, "")}"><div class="skel" style="margin-top:10px">reading this market's rate curve on-chain...</div></div>
+    <div id="irm-${r.key.replace(/[^a-zA-Z0-9]/g, "")}">${r.irm ? `<div class="skel" style="margin-top:10px">reading this market's rate curve on-chain...</div>` : `<div style="color:var(--muted);font-size:12px;margin-top:10px">${(r.venue || r.proto) === "morpho" ? `Morpho uses an AdaptiveCurve IRM (no fixed kink): borrowing first moves the rate along the curve as utilisation rises, then the target rate drifts over days if utilisation stays off-target. Now: borrow ${r.bBase.toFixed(2)}%, utilisation ${r.util != null ? r.util.toFixed(0) + "%" : "—"}.` : "On-chain rate-curve read is wired for Aave v3 only; this venue shares the Aave-v3 IRM model — check its own UI for live curve params."}</div>`}</div>
     <div class="levrow">Adjust leverage
       <input type="range" min="1.05" max="${r.maxLev.toFixed(2)}" step="0.05" value="${L.toFixed(2)}" data-lev="${r.key}">
       <input type="text" value="${L.toFixed(2)}" data-levin="${r.key}" style="width:56px;text-align:right">
@@ -518,11 +702,12 @@ function render() {
     if (r.conf === "emode") notes.push("e-mode ✓");
     if (rewShare > 0.5) notes.push(`<span class="flag">${Math.round(rewShare * 100)}% rewards</span>`);
     if (r.util != null && r.util > 88) notes.push('<span class="flag crit">near kink</span>');
+    if (r.pt) { notes.push(`<span style="color:var(--ink-2)">${r.venue}</span>`); notes.push(`${r.pt.days}d left`); }
     const open = EXP === r.key;
     h += `<tr class="pick${open ? " open" : ""}" data-k="${r.key}"><td class="num" style="color:var(--muted);font-size:11px"><span class="caret"></span></td>` +
       `<td>${r.cs} / ${r.bs}</td><td class="chainlbl">${r.chain}</td>` +
       `<td class="num ${v.carry >= 0 ? "pos" : "neg"}">${v.carry >= 0 ? "+" : ""}${v.carry.toFixed(2)}pp</td>` +
-      `<td class="num">${r.ltv != null ? (r.ltv * 100).toFixed(0) + "%" + (r.conf === "emode" ? "ᵉ" : "") : "—"}</td>` +
+      `<td class="num">${r.ltv != null ? (r.ltv * 100).toFixed(0) + "%" + (r.conf === "emode" ? "ᵉ" : r.model === "pair" ? "ᴸ" : "") : "—"}</td>` +
       `<td class="num ${v.net >= 0 ? "pos" : "neg"}">${v.net.toFixed(2)}% @${L.toFixed(1)}×</td>` +
       `<td class="num ${foot > 100 ? "neg" : ""}">${fmt$(borrowNeed)} / ${fmt$(r.avail)}${isFinite(foot) ? ` <span style="color:${foot > 100 ? "var(--crit)" : foot > 10 ? "var(--warn)" : "var(--muted)"}">(${foot.toFixed(0)}%)</span>` : ""}</td>` +
       `<td class="num">${r.util != null ? r.util.toFixed(0) + "%" : "—"}</td>` +
@@ -553,7 +738,7 @@ function render() {
     });
   });
   $("out").querySelectorAll("tr.detail").forEach(tr => tr.addEventListener("click", e => e.stopPropagation()));
-  if (EXP) { const er = rows.find(x => x.key === EXP); if (er) initIRM(er); }
+  if (EXP) { const er = rows.find(x => x.key === EXP); if (er && er.irm) initIRM(er); }
   fillStreaks(rows);
 }
 
@@ -573,7 +758,9 @@ $("liqSeg").addEventListener("click", e => { const b = e.target.closest("button"
 $("rewSeg").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return;
   $("rewSeg").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); REW = +b.dataset.r; render(); });
 $("chainSel").addEventListener("change", e => { CHAIN = e.target.value; render(); });
+$("protoSel").addEventListener("change", e => { PROTO_SEL = e.target.value; EXP = null; Object.keys(CUSTL).forEach(k => delete CUSTL[k]); rebuild(); });
 window._exp = k => { EXP = k; render(); };   // test hook
+window._proto = p => { PROTO_SEL = p; EXP = null; rebuild(); };   // test hook
 </script>
 </body>
 </html>
