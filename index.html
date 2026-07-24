@@ -58,8 +58,14 @@
   tr.detail td { white-space:normal; padding:0 9px 4px; }
   .panel { border-left:2px solid var(--accent); margin:6px 0 10px; padding:12px 16px; background:var(--surface); }
   .panel h4 { margin:0 0 6px; font-size:13px; font-weight:650; }
-  .pgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px 26px; }
-  .pblock .ph { font-size:11.5px; font-weight:650; color:var(--ink-2); margin-bottom:4px; }
+  .pgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:12px; }
+  .pgrid.p4 { grid-template-columns:repeat(4,minmax(0,1fr)); }
+  .pgrid.p2 { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  @media (max-width:1050px){ .pgrid.p4 { grid-template-columns:repeat(2,minmax(0,1fr)); } .pgrid.p2 { grid-template-columns:1fr; } }
+  .pblock { background:rgba(255,255,255,.015); border:1px solid var(--hairline); border-radius:3px; padding:10px 12px; min-width:0; }
+  .pblock .ph { font-size:11px; font-weight:650; color:var(--ink-2); margin-bottom:5px; text-transform:uppercase; letter-spacing:.04em; }
+  .pblock .dim { color:var(--muted); font-weight:400; }
+  .pblock div { margin:2px 0; overflow-wrap:break-word; white-space:normal; }
   .pblock div { font-size:12.5px; color:var(--ink-2); font-variant-numeric:tabular-nums; }
   .pblock b { color:var(--ink); font-weight:600; }
   .pblock .bad { color:var(--crit); } .pblock .ok { color:var(--good); } .pblock .wr { color:var(--warn); }
@@ -126,7 +132,7 @@
   <div class="sub" id="protoNote" style="margin-top:-4px;margin-bottom:14px"></div>
   <div id="out"><div class="skel">Fetching markets across venues and chains…</div></div>
 
-  <footer>Venues: Aave v3 (on-chain IRM + verified e-modes), Morpho isolated markets, Spark, and Pendle-PT loops (fixed implied APY from the Pendle API; Aave PT rows only where the e-mode was verified on-chain). Data: DefiLlama pools + lendBorrow, fetched in-browser on each load; intrinsic collateral yields from each asset's own source pool. LTV — reported by the API, or marked ᵉ where we verified the e-mode on-chain (dated in the panel). Rows showing — with a 'verify e-mode' flag have no reported LTV (e-mode-only or collateral-disabled): they price at a 3× reference and need manual verification before sizing. Post-trade utilization ignores the rate response (IRM params aren't public API data): crossing the kink will spike the borrow rate beyond what's shown. Streak = consecutive days the estimated base carry stayed positive (90-day lookback; borrow-leg history estimated from the borrow pool's supply-rate history). Not investment advice.</footer>
+  <footer>Venues: Aave v3 (on-chain IRM + verified e-modes), Morpho isolated markets, Spark, and Pendle-PT loops (fixed implied APY from the Pendle API; Aave PT rows only where the e-mode was verified on-chain). Data: DefiLlama pools + lendBorrow, fetched in-browser on each load; intrinsic collateral yields from each asset's own source pool. LTV — reported by the API, or marked ᵉ where the e-mode category was read on-chain (all categories on Ethereum / Plasma / Monad enumerated 2026-07-24; dated per row in the panel). ᴸ marks a single-LLTV isolated market. Rows showing — with a 'verify e-mode' flag have no reported LTV (e-mode-only or collateral-disabled): they price at a 3× reference and need manual verification before sizing. Post-trade utilization ignores the rate response (IRM params aren't public API data): crossing the kink will spike the borrow rate beyond what's shown. Streak = consecutive days the estimated base carry stayed positive (90-day lookback; borrow-leg history estimated from the borrow pool's supply-rate history). Not investment advice.</footer>
 </div>
 <div class="tt" id="tt" style="position:fixed;pointer-events:none;background:var(--surface);border:1px solid var(--rule);padding:8px 11px;font-size:12px;opacity:0;z-index:50;color:var(--ink);max-width:380px;white-space:normal"></div>
 
@@ -174,6 +180,7 @@ const INTRINSIC = {
   WSTETH:  { proj: "lido", sym: "STETH" },
   WEETH:   { proj: "ether.fi-stake", sym: "WEETH" },
   RSETH:   { proj: "kelp", sym: "RSETH" },
+  WRSETH:  { proj: "kelp", sym: "RSETH" },
   RETH:    { proj: "rocket-pool", sym: "RETH" },
   CBETH:   { proj: "coinbase-wrapped-staked-eth", sym: "CBETH" },
   EZETH:   { proj: "renzo", sym: "EZETH" },
@@ -209,17 +216,41 @@ const EXITT = {
   OSETH:"vault exit", SUSDE:"1-7d cooldown", SUSDS:"instant (PSM)", SDAI:"instant (PSM)",
   SAVUSD:"1d cooldown", SYRUPUSDC:"~1d normal / 30d stress clause", SYRUPUSDT:"~1d normal / 30d stress clause",
 };
-const ETH_COLL = ["WSTETH","WEETH","RSETH","RETH","CBETH","EZETH","SFRXETH","OSETH"];
+const ETH_COLL = ["WSTETH","WEETH","RSETH","WRSETH","RETH","CBETH","EZETH","SFRXETH","OSETH"];
 const ETH_BORROW = ["WETH","ETH"];
 const USD_COLL = ["SUSDE","SUSDS","SDAI","SAVUSD","SYRUPUSDC","SYRUPUSDT"];
 const USD_BORROW = ["USDC","USDT","USDT0","DAI","GHO","USDE","AUSD","MUSD","USDC.E","PYUSD","RLUSD","USDTB","USDS","USR"];
 // e-modes we have personally verified on-chain (date-labeled); everything else with API ltv=0
 // is shown at a 3x reference leverage with a verify flag instead of a fabricated max.
 const VERIFIED_EMODE = {
-  // borrow: the e-mode category's borrowable set; exhaustive: we verified this is the ONLY
-  // e-mode for the collateral on that chain, so other pairs are impossible when base LTV ~ 0.
-  "Plasma|SYRUPUSDT": { ltv: 0.90, lt: 0.92, borrow: ["USDT0"], exhaustive: true, asof: "on-chain 2026-07-24 (cat 11, USDT0-only)" },
-  "Ethereum|WSTETH":  { ltv: 0.93, lt: 0.95, borrow: ["WETH"], exhaustive: false, asof: "on-chain 2026-07-18 (ETH-correlated)" },
+  // Every e-mode category on these chains was enumerated on-chain 2026-07-24
+  // (getEModeCategoryCollateralConfig/CollateralBitmap/BorrowableBitmap over cats 1..60).
+  // opts = best category per borrow asset. exhaustive: the FULL category list was read,
+  // so a pair not covered here cannot be an e-mode trade on that chain - and if the base
+  // LTV is ~0 as well, the pair is impossible and is dropped instead of guessed.
+  "Plasma|SYRUPUSDT":   { exhaustive: true, asof: "on-chain 2026-07-24", opts: [
+    { b: ["USDT0"], ltv: 0.90, lt: 0.92, cat: 11 }, { b: ["GHO"], ltv: 0.90, lt: 0.92, cat: 18 } ] },
+  "Plasma|SUSDE":       { exhaustive: true, asof: "on-chain 2026-07-24", opts: [
+    { b: ["USDE"], ltv: 0.921, lt: 0.941, cat: 24 }, { b: ["USDT0", "GHO"], ltv: 0.90, lt: 0.92, cat: 2 } ] },
+  "Plasma|WSTETH":      { exhaustive: true, asof: "on-chain 2026-07-24", opts: [ { b: ["WETH"], ltv: 0.94, lt: 0.96, cat: 10 } ] },
+  "Plasma|WEETH":       { exhaustive: true, asof: "on-chain 2026-07-24", opts: [
+    { b: ["WETH"], ltv: 0.93, lt: 0.95, cat: 3 }, { b: ["USDT0"], ltv: 0.775, lt: 0.80, cat: 4 } ] },
+  "Plasma|WRSETH":      { exhaustive: true, asof: "on-chain 2026-07-24", opts: [ { b: ["WETH"], ltv: 0.93, lt: 0.95, cat: 9 } ] },
+  "Monad|SYRUPUSDC":    { exhaustive: true, asof: "on-chain 2026-07-24", opts: [
+    { b: ["USDT0", "USDC", "MUSD", "AUSD", "GHO"], ltv: 0.90, lt: 0.92, cat: 1 } ] },
+  "Monad|SUSDE":        { exhaustive: true, asof: "on-chain 2026-07-24", opts: [
+    { b: ["USDT0", "USDC", "AUSD", "GHO"], ltv: 0.90, lt: 0.92, cat: 2 } ] },
+  "Monad|WSTETH":       { exhaustive: true, asof: "on-chain 2026-07-24", opts: [ { b: ["WETH"], ltv: 0.94, lt: 0.96, cat: 3 } ] },
+  "Monad|WEETH":        { exhaustive: true, asof: "on-chain 2026-07-24", opts: [ { b: ["WETH"], ltv: 0.93, lt: 0.95, cat: 4 } ] },
+  "Ethereum|WSTETH":    { exhaustive: true, asof: "on-chain 2026-07-24", opts: [ { b: ["WETH"], ltv: 0.93, lt: 0.95, cat: 1 } ] },
+  "Ethereum|WEETH":     { exhaustive: true, asof: "on-chain 2026-07-24", opts: [ { b: ["WETH"], ltv: 0.93, lt: 0.95, cat: 1 } ] },
+  "Ethereum|RETH":      { exhaustive: true, asof: "on-chain 2026-07-24", opts: [ { b: ["WETH"], ltv: 0.93, lt: 0.95, cat: 1 } ] },
+  "Ethereum|CBETH":     { exhaustive: true, asof: "on-chain 2026-07-24", opts: [ { b: ["WETH"], ltv: 0.93, lt: 0.95, cat: 1 } ] },
+  "Ethereum|OSETH":     { exhaustive: true, asof: "on-chain 2026-07-24", opts: [ { b: ["WETH"], ltv: 0.93, lt: 0.95, cat: 1 } ] },
+  "Ethereum|RSETH":     { exhaustive: true, asof: "on-chain 2026-07-24", opts: [ { b: ["WETH"], ltv: 0.93, lt: 0.95, cat: 3 } ] },
+  "Ethereum|SUSDE":     { exhaustive: true, asof: "on-chain 2026-07-24", opts: [
+    { b: ["USDE"], ltv: 0.92, lt: 0.94, cat: 37 }, { b: ["USDC", "USDT", "USDTB"], ltv: 0.90, lt: 0.92, cat: 36 } ] },
+  "Ethereum|SYRUPUSDT": { exhaustive: true, asof: "on-chain 2026-07-24", opts: [ { b: ["USDT", "GHO"], ltv: 0.90, lt: 0.92, cat: 33 } ] },
 };
 const REF_LEV = 3;
 // Lending venues. model "pooled" = shared reserves, any collateral borrows any borrowable
@@ -228,7 +259,7 @@ const REF_LEV = 3;
 // (Aave only). irm: read the borrow-rate curve on-chain (wired for Aave v3 only).
 const PROTO = {
   aave_v3: { key: "aave_v3", label: "Aave v3", slug: "aave-v3", model: "pooled", emode: true, irm: true,
-             note: "Baseline. Shared-pool reserves with e-modes; borrow-rate curves are read live on-chain." },
+             note: "Baseline. Shared-pool reserves; every e-mode category on Ethereum / Plasma / Monad was enumerated on-chain (2026-07-24), so pairs no e-mode allows are dropped, not guessed. Borrow-rate curves read live on-chain." },
   morpho:  { key: "morpho", label: "Morpho", slug: "morpho-blue", model: "pair", emode: false, irm: false,
              note: "Isolated markets — each row is one collateral→loan pair with a single LLTV, so max leverage and the liquidation line coincide (no LT cushion). Bad debt is socialised to that market's lenders; liquidations carry no close factor." },
   spark:   { key: "spark", label: "Spark", slug: "sparklend", model: "pooled", emode: false, irm: false,
@@ -317,15 +348,17 @@ function buildPooled(proto) {
           const util = bm.supplyUsd ? bm.borrowUsd / bm.supplyUsd * 100 : null;
           const ve = proto.emode ? VERIFIED_EMODE[chain + "|" + cs] : null;
           const dust = !(cm.ltv >= 0.05);
+          let opt = null;
+          if (ve) for (const o of ve.opts) if (o.b.includes(bs) && (!opt || o.ltv > opt.ltv)) opt = o;
           let ltvRaw, lt, conf;
-          if (ve && ve.borrow.includes(bs)) { ltvRaw = ve.ltv; lt = ve.lt; conf = "emode"; }
-          else if (ve && ve.exhaustive && dust) continue;
+          if (opt && opt.ltv > (cm.ltv || 0)) { ltvRaw = opt.ltv; lt = opt.lt; conf = "emode"; }
+          else if (!opt && ve && ve.exhaustive && dust) continue;   // no e-mode allows this pair + no base LTV -> impossible
           else if (!dust) { ltvRaw = cm.ltv; lt = Math.min(0.98, cm.ltv + 0.02); conf = "api"; }
           else { ltvRaw = null; lt = null; conf = "unverified"; }
           rows.push({ proto: proto.key, model: "pooled", irm: !!proto.irm,
             chain, cat, cs, bs, intr: intrX.apy, intrSrc: intrX.src,
             supplyBase: cm.supplyBase, sRew: cm.supplyRew, bBase: bm.borrowBase, bRew: bm.borrowRew,
-            ltv: ltvRaw, lt, conf, assumed: conf === "unverified", emodeAsof: ve ? ve.asof : null,
+            ltv: ltvRaw, lt, conf, assumed: conf === "unverified", emodeAsof: opt ? ve.asof + " (cat " + opt.cat + ")" : null,
             maxLev: ltvRaw ? Math.max(1.1, 1 / (1 - ltvRaw)) : 5, avail, util, collTvl: cm.tvl,
             collSupplyUsd: cm.supplyUsd, collAvail: Math.max(0, cm.supplyUsd - cm.borrowUsd),
             borrowSupplyUsd: bm.supplyUsd, borrowUsd: bm.borrowUsd, borrowSupplyBaseNow: bm.supplyBase, borrowUnder: bm.under, collUnder: cm.under,
@@ -614,6 +647,29 @@ async function initIRM(r) {
 }
 
 // ---- detail panel ----
+const BRIDGE = {
+  WSTETH: "canonical Lido gateway to Arbitrum / OP / Base / Polygon / Gnosis / Scroll / Linea; other chains route via third-party OFTs - verify canonicity",
+  WEETH: "ether.fi OFT (LayerZero) - natively multichain (Arbitrum, Base, OP, BSC)",
+  RSETH: "Kelp OFT (LayerZero) from Ethereum to major L2s",
+  WRSETH: "wrapped rsETH - Kelp OFT (LayerZero) routes; verify the wrap contract on the venue chain",
+  EZETH: "Renzo OFT (LayerZero) to major L2s",
+  RETH: "canonical rollup bridges (Arbitrum / OP / Base / Polygon)",
+  CBETH: "Coinbase-native on Base; canonical rollup bridges elsewhere",
+  SFRXETH: "Frax transports (Ferry / LayerZero) - verify the route per chain",
+  OSETH: "effectively Ethereum-only - thin everywhere else",
+  SUSDE: "Ethena OFT (LayerZero) - USDe / sUSDe are natively multichain; mint by staking USDe on Ethereum",
+  SUSDS: "Sky SkyLink to Base / Arbitrum; other chains - verify",
+  SDAI: "on Gnosis mint natively against the Gnosis DSR (no bridge); mainnet sDAI stays on mainnet",
+  SAVUSD: "Avalanche-native (Avant) - mint on Avalanche, no bridge leg",
+  SYRUPUSDC: "mint on Ethereum via Maple, then LayerZero OFT to venue chains (e.g. Monad)",
+  SYRUPUSDT: "mint on Ethereum via Maple, then LayerZero OFT (on Plasma it arrives as syrupUSDT0)",
+};
+function bridgeNote(r) {
+  if (r.pt) return "PTs are chain-local - buy on the " + r.chain + " Pendle AMM; if entering cross-chain, bridge the underlying first";
+  if (r.chain === "Ethereum") return "mainnet venue - no bridge leg";
+  return BRIDGE[r.cs] || "no curated bridge route for " + r.cs + " to " + r.chain + " - verify before sizing";
+}
+const VLINK = { aave_v3: ["Aave", "https://app.aave.com"], spark: ["Spark", "https://app.spark.fi"], morpho: ["Morpho", "https://app.morpho.org"], pt: ["Pendle", "https://app.pendle.finance/trade/markets"] };
 function panelHtml(r) {
   const L = levOf(r), v = econOf(r, L);
   const borrowNeed = SIZE * (L - 1), gross = SIZE * L;
@@ -625,64 +681,116 @@ function panelHtml(r) {
   const maxByBorrow = L > 1.01 ? 0.10 * r.avail / (L - 1) : Infinity;             // borrow need <= 10% of available
   const maxDep = maxBySupply != null ? Math.min(maxBySupply, maxByBorrow) : maxByBorrow;
   const bindTag = maxBySupply != null && maxBySupply < maxByBorrow ? "20%-of-supply" : "10%-of-borrow-liquidity";
-  const uColl = r.collSupplyUsd > 0 ? 1 - r.collAvail / r.collSupplyUsd : 0;          // collateral-market utilization
-  const wSS = (r.collSupplyUsd + gross) * (1 - uColl);                                  // steady-state withdrawable incl. your deposit
+  const uColl = r.collSupplyUsd > 0 ? 1 - r.collAvail / r.collSupplyUsd : 0;
+  const wSS = (r.collSupplyUsd + gross) * (1 - uColl);
   const exitFoot = wSS > 0 ? gross / wSS * 100 : Infinity;
   const ltEff = r.lt != null ? r.lt : Math.min(0.98, (L - 1) / L + 0.05);
   const posLtv = (L - 1) / L, hf = ltEff * L / (L - 1), buf = 1 - posLtv / ltEff;
+  const ltLabel = r.lt != null && r.lt === r.ltv ? "LLTV" : "LT";
+  const cleanKey = r.key.replace(/[^a-zA-Z0-9]/g, "");
   const mint = r.pt
-    ? { m: "buy the PT on Pendle — AMM liquidity " + fmt$(r.pt.amm),
-        note: "The AMM is both entry and early-exit venue. Before maturity the PT price moves with the implied rate (ΔP ≈ −T·Δy — you are short rates); at maturity (" + r.pt.expiryStr + ", " + r.pt.days + "d) it redeems 1:1 into the underlying at zero slippage." }
+    ? { m: "buy the PT on Pendle - AMM liquidity " + fmt$(r.pt.amm),
+        note: "the AMM is both entry and early-exit venue; before maturity the PT price moves with the implied rate (you are short rates), at maturity (" + r.pt.expiryStr + ", " + r.pt.days + "d) it redeems 1:1 into the underlying" }
     : MINT[r.cs] || { m: "?", note: "" };
+  const vl = VLINK[r.proto] || VLINK[r.venue === "aave" ? "aave_v3" : r.venue] || null;
   const fl = [];
   if (foot > 100) fl.push('<span class="bad">borrow need exceeds available liquidity</span>');
-  else if (foot > 10) fl.push(`<span class="wr">you'd take ${foot.toFixed(0)}% of available liquidity (framework cap: 10%)</span>`);
-  if (supFoot != null && supFoot > 20) fl.push(`<span class="wr">you'd be ${supFoot.toFixed(0)}% of the collateral market (cap: 20%)</span>`);
-  if (postUtil != null && postUtil > 88) fl.push('<span class="bad">post-trade utilization crosses the kink zone — borrow rate will spike beyond what\'s shown</span>');
-  if (r.chain !== "Ethereum") fl.push('<span class="wr">non-mainnet: collateral must be minted natively or bridged — add bridge trust + exit time</span>');
+  else if (foot > 10) fl.push(`<span class="wr">you'd take ${foot.toFixed(0)}% of available borrow liquidity (framework cap: 10%)</span>`);
+  if (postUtil != null && postUtil > 88) fl.push('<span class="bad">post-trade utilization crosses the kink zone - the borrow rate will spike beyond what is shown</span>');
+  if (r.chain !== "Ethereum" && !r.pt) fl.push('<span class="wr">non-mainnet: add bridge trust and exit time to any stress plan</span>');
   if (r.pt) {
-    fl.push(`fixed leg runs ${r.pt.days}d to ${r.pt.expiryStr} — net APY is annualized; ≈ <b>${(v.net * r.pt.days / 365).toFixed(1)}%</b> absolute if held to maturity`);
-    if (r.venue === "morpho") fl.push('<span class="wr">Morpho PT markets typically price via a linear-discount oracle (accretes to par): rate spikes do not trigger liquidations, but the AMM can trade below oracle — verify the oracle on the market page before sizing</span>');
+    fl.push(`fixed leg runs ${r.pt.days}d to ${r.pt.expiryStr} - net APY is annualized; = <b>${(v.net * r.pt.days / 365).toFixed(1)}%</b> absolute if held to maturity`);
+    if (r.venue === "morpho") fl.push('<span class="wr">Morpho PT markets typically price via a linear-discount oracle (accretes to par): rate spikes do not trigger liquidations, but the AMM can trade below oracle - verify the oracle on the market page before sizing</span>');
   }
   return `<div class="panel">
-    <div class="pgrid">
-      <div class="pblock"><div class="ph">Carry math at ${L.toFixed(1)}×</div>
-        <div>s = ${r.intr.toFixed(2)}% intrinsic (${r.intrSrc})${r.model === "pair" ? "" : ` + ${r.supplyBase.toFixed(2)}% supply`}${REW && r.sRew ? ` + ${r.sRew.toFixed(2)}% rewards` : ""} = <b>${v.s.toFixed(2)}%</b></div>
-        <div>b = ${r.bBase.toFixed(2)}%${REW && r.bRew ? ` − ${r.bRew.toFixed(2)}% rewards` : ""} = <b>${v.b.toFixed(2)}%</b> · carry <b>${v.carry >= 0 ? "+" : ""}${v.carry.toFixed(2)}pp/turn</b></div>
-        <div>net = s·L − b·(L−1) = <b>${v.net.toFixed(2)}%</b> on equity</div>
-        <div>breakeven borrow <b>${(v.s / ((L - 1) / L)).toFixed(2)}%</b> · yearly on ${fmt$(SIZE)}: <b>${fmt$(SIZE * v.net / 100)}</b></div></div>
-      <div class="pblock"><div class="ph">Size vs market — deposit ${fmt$(SIZE)}</div>
-        <div>gross collateral <b>${fmt$(gross)}</b> · borrow need <b>${fmt$(borrowNeed)}</b></div>
-        ${r.model === "pair" ? `<div>isolated market — collateral is posted, not lent, so there is no collateral-supply share · your borrow is <b class="${borShare > 20 ? "wr" : ""}">${borShare != null ? borShare.toFixed(1) + "%" : "—"}</b> of this market's ${r.bs} debt</div>` : `<div>you'd be <b class="${supFoot > 20 ? "wr" : ""}">${supFoot != null ? supFoot.toFixed(1) + "%" : "—"}</b> of ${r.cs} supply (${fmt$(r.collSupplyUsd || r.collTvl || 0)}) · <b class="${borShare > 20 ? "wr" : ""}">${borShare != null ? borShare.toFixed(1) + "%" : "—"}</b> of all ${r.bs} borrows</div>`}
-        <div>available to borrow <b>${fmt$(r.avail)}</b> → footprint <b class="${foot > 100 ? "bad" : foot > 10 ? "wr" : "ok"}">${isFinite(foot) ? foot.toFixed(0) + "%" : "—"}</b> (framework cap 10%)</div>
-        <div>utilization ${r.util != null ? r.util.toFixed(0) : "—"}% → post-trade <b class="${postUtil > 88 ? "bad" : ""}">${postUtil != null ? postUtil.toFixed(0) + "%" : "—"}</b></div>
-        <div>max deposit at ${L.toFixed(1)}×: <b class="${SIZE > maxDep ? "wr" : "ok"}">${isFinite(maxDep) ? fmt$(maxDep) : "—"}</b> <span style="color:var(--muted)">(binds at ${bindTag}; ≤20% of ${r.cs} supply = ${maxBySupply != null ? fmt$(maxBySupply) : "—"}, ≤10% of borrow liq = ${isFinite(maxByBorrow) ? fmt$(maxByBorrow) : "—"})</span></div></div>
+    <div class="pgrid p4">
+      <div class="pblock"><div class="ph">Carry math - ${L.toFixed(1)}x</div>
+        <div>yield leg s = <b>${v.s.toFixed(2)}%</b> <span class="dim">(${r.intr.toFixed(2)}% ${r.pt ? "fixed" : "intrinsic"}, ${r.intrSrc}${r.supplyBase ? ` + ${r.supplyBase.toFixed(2)}% lend` : ""}${REW && r.sRew ? ` + ${r.sRew.toFixed(2)}% rewards` : ""})</span></div>
+        <div>debt leg b = <b>${v.b.toFixed(2)}%</b>${REW && r.bRew ? ` <span class="dim">(${r.bBase.toFixed(2)}% - ${r.bRew.toFixed(2)}% rewards)</span>` : ""} - carry <b class="${v.carry >= 0 ? "ok" : "bad"}">${v.carry >= 0 ? "+" : ""}${v.carry.toFixed(2)}pp</b>/turn</div>
+        <div>net = s.L - b.(L-1) = <b class="${v.net >= 0 ? "ok" : "bad"}">${v.net.toFixed(2)}%</b> on equity</div>
+        <div>breakeven borrow <b>${(v.s / ((L - 1) / L)).toFixed(2)}%</b> - yearly on ${fmt$(SIZE)} = <b>${fmt$(SIZE * v.net / 100)}</b></div></div>
+      <div class="pblock"><div class="ph">Size vs market - ${fmt$(SIZE)}</div>
+        <div>gross collateral <b>${fmt$(gross)}</b> - borrow <b>${fmt$(borrowNeed)}</b></div>
+        ${r.model === "pair" ? `<div>isolated market: collateral is posted, not lent - your borrow is <b class="${borShare > 20 ? "wr" : ""}">${borShare != null ? borShare.toFixed(1) + "%" : "-"}</b> of this market's ${r.bs} debt</div>` : `<div>you'd be <b class="${supFoot > 20 ? "wr" : ""}">${supFoot != null ? supFoot.toFixed(1) + "%" : "-"}</b> of ${r.cs} supply (${fmt$(r.collSupplyUsd || r.collTvl || 0)}) - <b class="${borShare > 20 ? "wr" : ""}">${borShare != null ? borShare.toFixed(1) + "%" : "-"}</b> of ${r.bs} borrows</div>`}
+        <div>borrow liquidity <b>${fmt$(r.avail)}</b> - footprint <b class="${foot > 100 ? "bad" : foot > 10 ? "wr" : "ok"}">${isFinite(foot) ? foot.toFixed(0) + "%" : "-"}</b> <span class="dim">(cap 10%)</span></div>
+        <div>utilization ${r.util != null ? r.util.toFixed(0) : "-"}% - post-trade <b class="${postUtil > 88 ? "bad" : ""}">${postUtil != null ? postUtil.toFixed(0) + "%" : "-"}</b></div>
+        <div>max deposit at ${L.toFixed(1)}x = <b class="${SIZE > maxDep ? "wr" : "ok"}">${isFinite(maxDep) ? fmt$(maxDep) : "-"}</b> <span class="dim">(binds at ${bindTag})</span></div></div>
       <div class="pblock"><div class="ph">Exit at size</div>
         ${r.model === "pair"
-          ? `<div>unwind = repay ${r.bs} debt <b>${fmt$(borrowNeed)}</b> → needs ${r.bs} liquidity, available <b>${fmt$(r.avail)}</b> (<b class="${foot > 100 ? "bad" : foot > 50 ? "wr" : "ok"}">${isFinite(foot) ? foot.toFixed(0) + "%" : "—"}</b>)</div>
-        <div>then ${r.pt ? "the PT leg" : "redeem / sell " + r.cs}: <b>${r.pt ? "redeems 1:1 at par on " + r.pt.expiryStr + "; early exit via Pendle AMM (" + fmt$(r.pt.amm) + ")" : EXITT[r.cs] || "—"}</b></div>
-        <div style="color:var(--muted)">${r.venue === "aave" ? "your PT is non-borrowable collateral — withdrawal is never liquidity-gated; unwind = repay the debt (liquidity above), withdraw the PT, sell or hold to par" : "isolated market: your collateral is posted, not lent — there is no self-funded exit off your own supply" + (r.venue === "morpho" ? ", and liquidations carry no close factor (up to 100% of the debt in one tx)" : "")}</div>`
-          : `<div>day one: your own deposit adds ${fmt$(gross)} of un-borrowed liquidity → <b class="ok">self-funded exit</b></div>
-        <div>steady state (others borrow against your supply at the market's ${(uColl * 100).toFixed(0)}% utilization): withdrawable ≈ <b>${fmt$(wSS)}</b> → your gross = <b class="${exitFoot > 100 ? "bad" : exitFoot > 50 ? "wr" : "ok"}">${isFinite(exitFoot) ? exitFoot.toFixed(0) + "%" : "—"}</b>${exitFoot > 100 ? ` → unwind in <b>~${Math.ceil(exitFoot / 100)} tranches</b>` : ""}</div>
-        <div>then redeem ${r.cs}: <b>${EXITT[r.cs] || "—"}</b></div>
-        <div style="color:var(--muted)">note: your borrow never draws on your own deposit — collateral and debt are different reserves; the borrow-side footprint above already reflects that</div>`}</div>
-      <div class="pblock"><div class="ph">Risk at ${L.toFixed(1)}×</div>
-        <div>position LTV <b>${(posLtv * 100).toFixed(1)}%</b> vs ${r.lt != null && r.lt === r.ltv ? "LLTV" : "LT"} <b>${(ltEff * 100).toFixed(1)}%${r.conf === "emode" || r.model === "pair" ? "" : "≈"}</b>${r.emodeAsof ? ` <span style="color:var(--muted)">(${r.emodeAsof})</span>` : ""}</div>
-        <div>health factor <b class="${hf < 1.05 ? "bad" : hf < 1.15 ? "wr" : "ok"}">${hf.toFixed(3)}</b> · liquidation on a <b>−${(buf * 100).toFixed(1)}%</b> collateral-vs-debt move</div>
-        <div>${r.model === "pair" && r.lt === r.ltv ? `single LLTV ${(r.ltv * 100).toFixed(1)}% — max leverage ${r.maxLev.toFixed(1)}× and the liquidation line coincide; no LT cushion${r.venue === "morpho" ? ", and bad debt is socialised to this market's lenders" : ""}` : r.conf === "unverified" ? "LTV not reported by the API — this asset may be e-mode-only or collateral-disabled here. Shown at a " + REF_LEV + "× reference; verify on the Aave UI before sizing." : `max leverage ${r.maxLev.toFixed(1)}× at LTV ${(r.ltv * 100).toFixed(0)}%${r.conf === "emode" ? " (verified e-mode)" : ""}`}</div>
-        <div>carry streak <span data-sk="${r.key}">${r.streakTxt !== undefined ? r.streakTxt : "…"}</span> · <a href="https://defillama.com/yields/pool/${r.collPool}" target="_blank" rel="noopener">collateral pool</a> · <a href="https://defillama.com/yields/pool/${r.borrowPool}" target="_blank" rel="noopener">borrow pool</a></div></div>
-      <div class="pblock"><div class="ph">Acquiring ${r.cs} at size — mint vs buy</div>
-        <div>mint route: <b>${mint.m}</b></div>
-        <div style="max-width:46ch">${mint.note}</div>
-        ${fl.length ? '<div style="margin-top:6px">' + fl.join("<br>") + "</div>" : ""}</div>
+          ? `<div>unwind = repay ${r.bs} debt <b>${fmt$(borrowNeed)}</b> from <b>${fmt$(r.avail)}</b> available (<b class="${foot > 100 ? "bad" : foot > 50 ? "wr" : "ok"}">${isFinite(foot) ? foot.toFixed(0) + "%" : "-"}</b>)</div>
+        <div>then ${r.pt ? "the PT leg" : "redeem / sell " + r.cs}: <b>${r.pt ? "redeems 1:1 at par on " + r.pt.expiryStr + "; early exit via Pendle AMM (" + fmt$(r.pt.amm) + ")" : EXITT[r.cs] || "-"}</b></div>
+        <div class="dim">${r.venue === "aave" ? "your PT is non-borrowable collateral - withdrawal is never liquidity-gated; unwind = repay the debt, withdraw the PT, sell or hold to par" : "isolated market: your collateral is posted, not lent - no self-funded exit off your own supply" + (r.venue === "morpho" ? "; liquidations carry no close factor (up to 100% of the debt in one tx)" : "")}</div>`
+          : `<div>day one: your own deposit adds ${fmt$(gross)} of un-borrowed liquidity - <b class="ok">self-funded exit</b></div>
+        <div>steady state (${(uColl * 100).toFixed(0)}% collateral utilization): withdrawable = <b>${fmt$(wSS)}</b>, your gross = <b class="${exitFoot > 100 ? "bad" : exitFoot > 50 ? "wr" : "ok"}">${isFinite(exitFoot) ? exitFoot.toFixed(0) + "%" : "-"}</b>${exitFoot > 100 ? ` - unwind in <b>~${Math.ceil(exitFoot / 100)} tranches</b>` : ""}</div>
+        <div>then redeem ${r.cs}: <b>${EXITT[r.cs] || "-"}</b></div>
+        <div class="dim">your borrow never draws on your own deposit - collateral and debt are different reserves</div>`}</div>
+      <div class="pblock"><div class="ph">Risk - ${L.toFixed(1)}x</div>
+        <div>position LTV <b>${(posLtv * 100).toFixed(1)}%</b> vs ${ltLabel} <b>${(ltEff * 100).toFixed(1)}%${r.conf === "emode" || (r.lt != null && r.lt === r.ltv) ? "" : "\u2248"}</b>${r.emodeAsof ? ` <span class="dim">(${r.emodeAsof})</span>` : ""}</div>
+        <div>health factor <b class="${hf < 1.05 ? "bad" : hf < 1.15 ? "wr" : "ok"}">${hf.toFixed(3)}</b> - liquidated on a <b>-${(buf * 100).toFixed(1)}%</b> collateral-vs-debt move</div>
+        <div class="dim">${r.model === "pair" && r.lt === r.ltv ? `single LLTV ${(r.ltv * 100).toFixed(1)}%: max leverage and the liquidation line coincide - no LT cushion${r.venue === "morpho" ? "; bad debt is socialised to this market's lenders" : ""}` : r.conf === "unverified" ? "LTV not reported by the API - this asset may be e-mode-only or collateral-disabled here. Shown at a " + REF_LEV + "x reference; verify on the venue UI before sizing." : `max leverage ${r.maxLev.toFixed(1)}x at LTV ${(r.ltv * 100).toFixed(1)}%${r.conf === "emode" ? " (verified e-mode)" : ""}`}</div></div>
     </div>
-    <div id="irm-${r.key.replace(/[^a-zA-Z0-9]/g, "")}">${r.irm ? `<div class="skel" style="margin-top:10px">reading this market's rate curve on-chain...</div>` : `<div style="color:var(--muted);font-size:12px;margin-top:10px">${(r.venue || r.proto) === "morpho" ? `Morpho uses an AdaptiveCurve IRM (no fixed kink): borrowing first moves the rate along the curve as utilisation rises, then the target rate drifts over days if utilisation stays off-target. Now: borrow ${r.bBase.toFixed(2)}%, utilisation ${r.util != null ? r.util.toFixed(0) + "%" : "—"}.` : "On-chain rate-curve read is wired for Aave v3 only; this venue shares the Aave-v3 IRM model — check its own UI for live curve params."}</div>`}</div>
+    <div class="pgrid p2" style="margin-top:12px">
+      <div class="pblock"><div class="ph">Sourcing ${r.cs} - mint, bridge, caveats</div>
+        <div><b>Mint / entry:</b> ${mint.m}</div>
+        ${mint.note ? `<div class="dim">${mint.note}</div>` : ""}
+        <div><b>Bridge:</b> ${bridgeNote(r)}</div>
+        ${fl.length ? '<div style="margin-top:6px">' + fl.join("<br>") + "</div>" : ""}</div>
+      <div class="pblock"><div class="ph">Carry history - est. net APY at ${L.toFixed(1)}x, 90d</div>
+        <div id="hist-${cleanKey}"><div class="skel" style="padding:6px 0">building history from pool rate series...</div></div>
+        <div class="dim">${r.pt ? "fixed leg held constant at today's implied - only the borrow leg floats; " : ""}borrow leg scaled from the borrow pool's supply-rate history (borrow-rate history is not public) - streak <span data-sk="${r.key}">${r.streakTxt !== undefined ? r.streakTxt : "..."}</span> positive</div>
+        <div style="margin-top:4px">${r.collPool ? `<a href="https://defillama.com/yields/pool/${r.collPool}" target="_blank" rel="noopener">collateral pool</a> - ` : ""}<a href="https://defillama.com/yields/pool/${r.borrowPool}" target="_blank" rel="noopener">borrow pool</a>${r.intrPool ? ` - <a href="https://defillama.com/yields/pool/${r.intrPool}" target="_blank" rel="noopener">yield source</a>` : ""}${vl ? ` - <a href="${vl[1]}" target="_blank" rel="noopener">open ${vl[0]}</a>` : ""}</div></div>
+    </div>
+    <div id="irm-${cleanKey}">${r.irm ? `<div class="skel" style="margin-top:10px">reading this market's rate curve on-chain...</div>` : `<div style="color:var(--muted);font-size:12px;margin-top:10px">${(r.venue || r.proto) === "morpho" ? `Morpho uses an AdaptiveCurve IRM (no fixed kink): borrowing first moves the rate along the curve as utilisation rises, then the target rate drifts over days if utilisation stays off-target. Now: borrow ${r.bBase.toFixed(2)}%, utilisation ${r.util != null ? r.util.toFixed(0) + "%" : "-"}.` : "On-chain rate-curve read is wired for Aave v3 only; this venue shares the Aave-v3 IRM model - check its own UI for live curve params."}</div>`}</div>
     <div class="levrow">Adjust leverage
       <input type="range" min="1.05" max="${r.maxLev.toFixed(2)}" step="0.05" value="${L.toFixed(2)}" data-lev="${r.key}">
       <input type="text" value="${L.toFixed(2)}" data-levin="${r.key}" style="width:56px;text-align:right">
-      <b data-levlbl="${r.key}">${L.toFixed(2)}×</b> <span style="color:var(--muted)">(max ${r.maxLev.toFixed(2)}×${r.conf === "unverified" ? " ref" : ""})</span>
+      <b data-levlbl="${r.key}">${L.toFixed(2)}x</b> <span style="color:var(--muted)">(max ${r.maxLev.toFixed(2)}x${r.conf === "unverified" ? " ref" : ""})</span>
     </div>
   </div>`;
+}
+
+// ---- 90d carry-history sparkline ----
+async function initHist(r) {
+  const id = "hist-" + r.key.replace(/[^a-zA-Z0-9]/g, "");
+  if (!document.getElementById(id)) return;
+  const L = levOf(r);
+  const fail = msg => { const el = document.getElementById(id); if (el) el.innerHTML = `<div style="color:var(--muted);font-size:12px">${msg}</div>`; };
+  if (r.borrowSupplyBaseNow == null || r.borrowSupplyBaseNow < 0.03) return fail("history unavailable - the borrow pool has no usable rate series to scale from");
+  const [ic, sc, bc] = await Promise.all([
+    r.pt ? Promise.resolve(null) : chartOf(r.intrPool, "apy"),
+    (r.collPool && !r.pt) ? chartOf(r.collPool, "base") : Promise.resolve({}),
+    chartOf(r.borrowPool, "base")]);
+  if (!document.getElementById(id)) return;
+  if (!bc || (!r.pt && !ic)) return fail("history unavailable - rate series could not be fetched");
+  const scale = r.bBase / r.borrowSupplyBaseNow;
+  const dates = Object.keys(bc).sort().slice(-90);
+  const pts = [];
+  for (const d of dates) {
+    const b = bc[d]; if (b == null) continue;
+    let sY;
+    if (r.pt) sY = r.intr;
+    else { const i = ic[d]; if (i == null) continue; sY = i + ((r.collPool && sc && sc[d] != null) ? sc[d] : 0); }
+    pts.push({ d, net: sY * L - b * scale * (L - 1) });
+  }
+  if (pts.length < 5) return fail("not enough overlapping history for this pair");
+  const W = 470, H = 120, pl = 40, pr = 10, pt2 = 10, pb = 18;
+  let lo = Math.min(0, ...pts.map(p => p.net)), hi = Math.max(...pts.map(p => p.net), 0.1);
+  const span = hi - lo || 1; lo -= span * 0.06; hi += span * 0.06;
+  const x = i => pl + (W - pl - pr) * i / (pts.length - 1);
+  const y = v => pt2 + (H - pt2 - pb) * (1 - (v - lo) / (hi - lo));
+  let d1 = "";
+  pts.forEach((p, i) => d1 += (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.net).toFixed(1));
+  const last = pts[pts.length - 1], minP = pts.reduce((a, b2) => b2.net < a.net ? b2 : a);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:480px;display:block">`;
+  if (lo < 0) svg += `<line x1="${pl}" y1="${y(0)}" x2="${W - pr}" y2="${y(0)}" stroke="var(--rule)" stroke-dasharray="4 4"/>`;
+  for (const g of [hi - span * 0.06, lo + span * 0.06]) svg += `<text x="${pl - 5}" y="${y(g) + 3}" fill="var(--muted)" font-size="9.5" text-anchor="end">${g.toFixed(1)}%</text>`;
+  svg += `<text x="${pl}" y="${H - 5}" fill="var(--muted)" font-size="9.5">${pts[0].d}</text><text x="${W - pr}" y="${H - 5}" fill="var(--muted)" font-size="9.5" text-anchor="end">${last.d}</text>`;
+  svg += `<path d="${d1}" fill="none" stroke="${last.net >= 0 ? "var(--good)" : "var(--crit)"}" stroke-width="1.6"/>`;
+  const mi = pts.indexOf(minP);
+  svg += `<circle cx="${x(mi)}" cy="${y(minP.net)}" r="3" fill="var(--warn)"/><text x="${Math.min(Math.max(x(mi), pl + 45), W - 120)}" y="${Math.min(y(minP.net) + 13, H - pb - 2)}" fill="var(--warn)" font-size="9.5" text-anchor="middle">min ${minP.net.toFixed(1)}% (${minP.d.slice(5)})</text>`;
+  svg += `<circle cx="${x(pts.length - 1)}" cy="${y(last.net)}" r="3.5" fill="var(--ink)"/><text x="${W - pr}" y="${Math.max(y(last.net) - 7, 9)}" fill="var(--ink)" font-size="10" text-anchor="end">now ${last.net.toFixed(2)}%</text>`;
+  svg += `</svg>`;
+  const el = document.getElementById(id); if (el) el.innerHTML = svg;
 }
 
 function render() {
@@ -738,7 +846,7 @@ function render() {
     });
   });
   $("out").querySelectorAll("tr.detail").forEach(tr => tr.addEventListener("click", e => e.stopPropagation()));
-  if (EXP) { const er = rows.find(x => x.key === EXP); if (er && er.irm) initIRM(er); }
+  if (EXP) { const er = rows.find(x => x.key === EXP); if (er) { if (er.irm) initIRM(er); initHist(er); } }
   fillStreaks(rows);
 }
 
