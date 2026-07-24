@@ -158,6 +158,12 @@ const MINT = {
   SYRUPUSDC: { m: "open", note: "deposit USDC into Maple syrup — open; exit ~1d normal, 30d clause in stress; DEX very thin" },
   SYRUPUSDT: { m: "open", note: "deposit USDT into Maple syrup — open; exit ~1d normal, 30d clause in stress; DEX very thin" },
 };
+const EXITT = {
+  WSTETH:"queue days / DEX instant", WEETH:"queue / DEX", RSETH:"queue (slow post-incident)",
+  RETH:"DEX only in size", CBETH:"Coinbase / DEX", EZETH:"queue / DEX", SFRXETH:"redeem",
+  OSETH:"vault exit", SUSDE:"1-7d cooldown", SUSDS:"instant (PSM)", SDAI:"instant (PSM)",
+  SAVUSD:"1d cooldown", SYRUPUSDC:"~1d normal / 30d stress clause", SYRUPUSDT:"~1d normal / 30d stress clause",
+};
 const ETH_COLL = ["WSTETH","WEETH","RSETH","RETH","CBETH","EZETH","SFRXETH","OSETH"];
 const ETH_BORROW = ["WETH","ETH"];
 const USD_COLL = ["SUSDE","SUSDS","SDAI","SAVUSD","SYRUPUSDC","SYRUPUSDT"];
@@ -221,6 +227,7 @@ function hideTT() { $("tt").style.opacity = 0; }
             supplyBase: cm.supplyBase, sRew: cm.supplyRew, bBase: bm.borrowBase, bRew: bm.borrowRew,
             ltv: ltvRaw, lt: assumed ? EMODE_LT[cat] : Math.min(0.98, ltvRaw + 0.02), assumed,
             maxLev: 1 / (1 - ltvRaw), avail, util, collTvl: cm.tvl,
+            collSupplyUsd: cm.supplyUsd, collAvail: Math.max(0, cm.supplyUsd - cm.borrowUsd),
             borrowSupplyUsd: bm.supplyUsd, borrowUsd: bm.borrowUsd, borrowSupplyBaseNow: bm.supplyBase,
             key: chain + "|" + cs + "|" + bs, intrPool: intr[cs].pool, collPool: cm.pool, borrowPool: bm.pool });
         }
@@ -294,6 +301,8 @@ function panelHtml(r) {
   const foot = r.avail > 0 ? borrowNeed / r.avail * 100 : Infinity;
   const postUtil = r.borrowSupplyUsd ? (r.borrowUsd + Math.min(borrowNeed, r.avail)) / r.borrowSupplyUsd * 100 : null;
   const supFoot = r.collTvl > 0 ? gross / (r.collTvl + gross) * 100 : null;
+  const borShare = (r.borrowUsd + borrowNeed) > 0 ? borrowNeed / (r.borrowUsd + borrowNeed) * 100 : null;
+  const exitFoot = r.collAvail > 0 ? gross / r.collAvail * 100 : Infinity;
   const posLtv = (L - 1) / L, hf = r.lt * L / (L - 1), buf = 1 - posLtv / r.lt;
   const mint = MINT[r.cs] || { m: "?", note: "" };
   const fl = [];
@@ -311,9 +320,14 @@ function panelHtml(r) {
         <div>breakeven borrow <b>${(v.s / ((L - 1) / L)).toFixed(2)}%</b> · yearly on ${fmt$(SIZE)}: <b>${fmt$(SIZE * v.net / 100)}</b></div></div>
       <div class="pblock"><div class="ph">Size vs market — deposit ${fmt$(SIZE)}</div>
         <div>gross collateral <b>${fmt$(gross)}</b> · borrow need <b>${fmt$(borrowNeed)}</b></div>
-        <div>available to borrow <b>${fmt$(r.avail)}</b> → your footprint <b class="${foot > 100 ? "bad" : foot > 10 ? "wr" : "ok"}">${isFinite(foot) ? foot.toFixed(0) + "%" : "—"}</b></div>
-        <div>utilization ${r.util != null ? r.util.toFixed(0) : "—"}% → post-trade <b class="${postUtil > 88 ? "bad" : ""}">${postUtil != null ? postUtil.toFixed(0) + "%" : "—"}</b></div>
-        <div>collateral market ${fmt$(r.collTvl)} → you'd be <b class="${supFoot > 15 ? "wr" : ""}">${supFoot != null ? supFoot.toFixed(0) + "%" : "—"}</b> of it</div></div>
+        <div>you'd be <b class="${supFoot > 15 ? "wr" : ""}">${supFoot != null ? supFoot.toFixed(1) + "%" : "—"}</b> of ${r.cs} supply (${fmt$(r.collSupplyUsd || r.collTvl)}) · <b class="${borShare > 20 ? "wr" : ""}">${borShare != null ? borShare.toFixed(1) + "%" : "—"}</b> of all ${r.bs} borrows</div>
+        <div>available to borrow <b>${fmt$(r.avail)}</b> → footprint <b class="${foot > 100 ? "bad" : foot > 10 ? "wr" : "ok"}">${isFinite(foot) ? foot.toFixed(0) + "%" : "—"}</b> (framework cap 10%)</div>
+        <div>utilization ${r.util != null ? r.util.toFixed(0) : "—"}% → post-trade <b class="${postUtil > 88 ? "bad" : ""}">${postUtil != null ? postUtil.toFixed(0) + "%" : "—"}</b></div></div>
+      <div class="pblock"><div class="ph">Exit at size</div>
+        <div>${r.cs} withdrawable from Aave now: <b>${fmt$(r.collAvail)}</b> (un-borrowed supply)</div>
+        <div>your gross vs withdrawable: <b class="${exitFoot > 100 ? "bad" : exitFoot > 50 ? "wr" : "ok"}">${isFinite(exitFoot) ? exitFoot.toFixed(0) + "%" : "—"}</b>${exitFoot > 100 ? ` → unwind in <b>~${Math.ceil(gross / Math.max(r.collAvail, 1))} tranches</b>, waiting on repayments between` : " → single-shot unwind possible"}</div>
+        <div>then redeem ${r.cs}: <b>${EXITT[r.cs] || "—"}</b></div>
+        <div style="color:var(--muted)">exit = withdraw collateral (needs market liquidity) → redeem/sell → repay debt; debt repayment itself needs no liquidity</div></div>
       <div class="pblock"><div class="ph">Risk at ${L.toFixed(1)}×</div>
         <div>position LTV <b>${(posLtv * 100).toFixed(1)}%</b> vs LT <b>${(r.lt * 100).toFixed(1)}%${r.assumed ? "≈" : ""}</b></div>
         <div>health factor <b class="${hf < 1.05 ? "bad" : hf < 1.15 ? "wr" : "ok"}">${hf.toFixed(3)}</b> · liquidation on a <b>−${(buf * 100).toFixed(1)}%</b> collateral-vs-debt move</div>
