@@ -69,6 +69,12 @@
   .pblock div { font-size:12.5px; color:var(--ink-2); font-variant-numeric:tabular-nums; }
   .pblock b { color:var(--ink); font-weight:600; }
   .pblock .bad { color:var(--crit); } .pblock .ok { color:var(--good); } .pblock .wr { color:var(--warn); }
+  .pmrow { display:grid; grid-template-columns:minmax(150px,230px) 1fr minmax(110px,140px); gap:10px; align-items:center; font-size:12px; margin:3px 0; color:var(--ink-2); }
+  .pmrow .pmlbl { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pmbar { height:8px; background:rgba(255,255,255,.04); border-radius:1px; }
+  .pmbar > div { height:100%; border-radius:1px; }
+  .pmnum { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .pmtag { font-size:10px; padding:0 4px; border:1px solid var(--rule); border-radius:2px; margin-left:5px; }
   .levrow { display:flex; align-items:center; gap:12px; margin-top:10px; font-size:12.5px; color:var(--ink-2); }
   .levrow input[type=range] { width:220px; accent-color:var(--accent); }
   .levrow b { color:var(--ink); font-variant-numeric:tabular-nums; }
@@ -849,6 +855,24 @@ const VENUE_RISK = {
   compound: "Comet's liquidation CF sits a few points above the borrow CF used here - the buffer shown is conservative. Collateral earns nothing on Comet.",
   curvance: "single collateralization ratio as reported by DefiLlama - verify liquidation params on the venue before sizing.",
 };
+// every DefiLlama pool where this collateral deploys - bar map, current market + yield source highlighted
+function poolMap(r) {
+  if (!POOLS) return "";
+  const list = POOLS.filter(p => p.symbol.toUpperCase() === r.cs && (p.tvlUsd || 0) >= 1e6)
+    .sort((a, b) => b.tvlUsd - a.tvlUsd);
+  if (list.length < 2) return "";
+  const shown = list.slice(0, 14), max = shown[0].tvlUsd || 1;
+  const bars = shown.map(p => {
+    const here = r.collPool && p.pool === r.collPool, src = r.intrPool && p.pool === r.intrPool;
+    const col = here ? "var(--accent)" : src ? "var(--good)" : "rgba(255,255,255,.18)";
+    const w = Math.max(1.2, p.tvlUsd / max * 100);
+    return `<div class="pmrow"><div class="pmlbl" style="${here || src ? "color:var(--ink)" : ""}">${p.project} · ${p.chain}${here ? '<span class="pmtag" style="color:var(--accent)">this market</span>' : ""}${src ? '<span class="pmtag" style="color:var(--good)">yield source</span>' : ""}</div>` +
+      `<div class="pmbar"><div style="width:${w.toFixed(1)}%;background:${col}"></div></div>` +
+      `<div class="pmnum">${fmt$(p.tvlUsd)} · ${(p.apy || 0).toFixed(2)}%</div></div>`;
+  }).join("");
+  return `<div class="pblock" style="margin-top:12px"><div class="ph">Everywhere ${r.cs} deploys — pools ≥ $1M, all venues (TVL · supply APY)</div>${bars}` +
+    (list.length > 14 ? `<div class="dim" style="margin-top:4px">+ ${list.length - 14} more pools below ${fmt$(shown[13].tvlUsd)}</div>` : "") + `</div>`;
+}
 function panelHtml(r) {
   const L = levOf(r), v = econOf(r, L);
   const borrowNeed = SIZE * (L - 1), gross = SIZE * L;
@@ -920,6 +944,7 @@ function panelHtml(r) {
         <div class="dim">${r.pt ? "fixed leg held constant at today's implied - only the borrow leg floats; " : ""}borrow leg scaled from the borrow pool's supply-rate history (borrow-rate history is not public) - streak <span data-sk="${r.key}">${r.streakTxt !== undefined ? r.streakTxt : "..."}</span> positive</div>
         <div style="margin-top:4px">${r.collPool ? `<a href="https://defillama.com/yields/pool/${r.collPool}" target="_blank" rel="noopener">collateral pool</a> - ` : ""}${r.borrowPool ? `<a href="https://defillama.com/yields/pool/${r.borrowPool}" target="_blank" rel="noopener">borrow pool</a>` : ""}${r.intrPool ? ` - <a href="https://defillama.com/yields/pool/${r.intrPool}" target="_blank" rel="noopener">yield source</a>` : ""}${vl ? ` - <a href="${vl[1]}" target="_blank" rel="noopener">open ${vl[0]}</a>` : ""}</div></div>
     </div>
+    ${poolMap(r)}
     <div id="irm-${cleanKey}">${r.irm ? `<div class="skel" style="margin-top:10px">reading this market's rate curve on-chain...</div>` : `<div style="color:var(--muted);font-size:12px;margin-top:10px">${(r.venue || r.proto) === "morpho" ? `Morpho uses an AdaptiveCurve IRM (no fixed kink): borrowing first moves the rate along the curve as utilisation rises, then the target rate drifts over days if utilisation stays off-target. Now: borrow ${r.bBase.toFixed(2)}%, utilisation ${r.util != null ? r.util.toFixed(0) + "%" : "-"}.` : (r.venue === "fluid" ? "Rates and limits come live from Fluid's own API; the on-chain curve read is wired for Aave v3 only." : "On-chain rate-curve read is wired for Aave v3 only - check the venue UI for live curve params.")}</div>`}</div>
     <div class="levrow">Adjust leverage
       <input type="range" min="1.05" max="${r.maxLev.toFixed(2)}" step="0.05" value="${L.toFixed(2)}" data-lev="${r.key}">
