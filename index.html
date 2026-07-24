@@ -301,6 +301,14 @@ const VERIFIED_EMODE = {
     { b: ["USDE"], ltv: 0.92, lt: 0.94, cat: 37 }, { b: ["USDC", "USDT", "USDTB"], ltv: 0.90, lt: 0.92, cat: 36 } ] },
   "Ethereum|SYRUPUSDT": { exhaustive: true, asof: "on-chain 2026-07-24", opts: [ { b: ["USDT", "GHO"], ltv: 0.90, lt: 0.92, cat: 33 } ] },
 };
+const SPARK_EMODE = {
+  // SparkLend Ethereum (Aave v3.0 fork - one category per reserve). Read on-chain 2026-07-24:
+  // getEModeCategoryData + every reserve's getConfiguration (category bits 168-175, borrow bit 58).
+  "Ethereum|WSTETH": { exhaustive: true, asof: "on-chain 2026-07-24 (Spark)", opts: [ { b: ["WETH"], ltv: 0.92, lt: 0.93, cat: 1 } ] },
+  "Ethereum|SUSDS":  { exhaustive: true, asof: "on-chain 2026-07-24 (Spark)", opts: [ { b: ["USDC", "USDT", "PYUSD"], ltv: 0.91, lt: 0.92, cat: 2 } ] },
+  "Ethereum|SDAI":   { exhaustive: true, asof: "on-chain 2026-07-24 (Spark)", opts: [ { b: ["USDC", "USDT", "PYUSD"], ltv: 0.91, lt: 0.92, cat: 2 } ] },
+};
+const EMODE_MAPS = { aave_v3: VERIFIED_EMODE, spark: SPARK_EMODE };
 const REF_LEV = 3;
 // Lending venues. model "pooled" = shared reserves, any collateral borrows any borrowable
 // asset (Aave-style cross-product); "pair" = isolated markets, each row is one collateral->loan
@@ -311,8 +319,8 @@ const PROTO = {
              note: "Baseline. Shared-pool reserves; every e-mode category on Ethereum / Plasma / Monad was enumerated on-chain (2026-07-24), so pairs no e-mode allows are dropped, not guessed. Borrow-rate curves read live on-chain." },
   morpho:  { key: "morpho", label: "Morpho", slug: "morpho-blue", model: "pair", emode: false, irm: false,
              note: "Isolated markets — each row is one collateral→loan pair with a single LLTV, so max leverage and the liquidation line coincide (no LT cushion). Bad debt is socialised to that market's lenders; liquidations carry no close factor." },
-  spark:   { key: "spark", label: "Spark", slug: "sparklend", model: "pooled", emode: false, irm: false,
-             note: "Aave-v3 fork, Ethereum only. Same shared-pool model; the on-chain rate read is wired for Aave v3, so curve params aren't drawn here yet." },
+  spark:   { key: "spark", label: "Spark", slug: "sparklend", model: "pooled", emode: true, irm: false,
+             note: "Aave-v3.0 fork, Ethereum only. E-mode categories read on-chain 2026-07-24: ETH e-mode 92/93 (wstETH vs WETH), stables e-mode 91/92 (sDAI / sUSDS vs USDC / USDT / PYUSD); weETH has no e-mode here. Rate-curve read is wired for Aave v3.1+ only." },
   fluid:    { key: "fluid", label: "Fluid", slug: null, model: "fluid", emode: false, irm: false,
              note: "Isolated vaults on a shared liquidity layer - data comes live from Fluid's own API: real CF and LT per vault plus the venue's instant borrowable / withdrawable limits (they auto-expand over hours, so treat shown liquidity as the floor)." },
   compound: { key: "compound", label: "Compound v3", slug: "compound-v3", model: "compound", emode: false, irm: false,
@@ -411,7 +419,7 @@ function buildPooled(proto) {
           const avail = Math.max(0, bm.supplyUsd - bm.borrowUsd);
           if (avail < 1e5) continue;
           const util = bm.supplyUsd ? bm.borrowUsd / bm.supplyUsd * 100 : null;
-          const ve = proto.emode ? VERIFIED_EMODE[chain + "|" + cs] : null;
+          const ve = proto.emode ? (EMODE_MAPS[proto.key] || {})[chain + "|" + cs] : null;
           const dust = !(cm.ltv >= 0.05);
           let opt = null;
           if (ve) for (const o of ve.opts) if (o.b.includes(bs) && (!opt || o.ltv > opt.ltv)) opt = o;
@@ -1004,11 +1012,14 @@ function render() {
   rows.sort((a, b) => b._v.net - a._v.net);
   rows = rows.slice(0, 80);
   if (!rows.length) { $("out").innerHTML = '<p class="skel">No loops match the filters.</p>'; return; }
-  let h = `<table><tr><th></th><th>Loop</th><th>Chain</th><th class="num">Carry / turn</th><th class="num">LTV</th><th class="num">Net @ lev</th><th class="num">Your borrow / liquidity</th><th class="num">Util</th><th class="num" title="consecutive days the estimated base carry has been positive (90d lookback)">Streak est.</th><th>Notes</th></tr>`;
+  let h = `<table><tr><th></th><th>Loop</th><th>Chain</th><th class="num">Carry / turn</th><th class="num">LTV</th><th class="num">Net @ lev</th><th class="num" title="largest deposit at this leverage that stays within 20% of collateral supply and 10% of available borrow liquidity — the framework caps">Max size</th><th class="num">Your borrow / liquidity</th><th class="num">Util</th><th class="num" title="consecutive days the estimated base carry has been positive (90d lookback)">Streak est.</th><th>Notes</th></tr>`;
   rows.forEach((r, i) => {
     const v = r._v, L = r._L;
     const borrowNeed = SIZE * (L - 1);
     const foot = r.avail > 0 ? borrowNeed / r.avail * 100 : Infinity;
+    const mxS = r.collSupplyUsd > 0 ? 0.25 * r.collSupplyUsd / L : Infinity;
+    const mxB = L > 1.01 ? 0.10 * r.avail / (L - 1) : Infinity;
+    const mx = Math.min(mxS, mxB);
     const rewShare = REW && v.net > 0 ? Math.max(0, v.net - econOf({ ...r, sRew: 0, bRew: 0 }, L).net) / v.net : 0;
     const notes = [];
     if (r.conf === "unverified") notes.push('<span class="flag">verify e-mode</span>');
@@ -1022,11 +1033,12 @@ function render() {
       `<td class="num ${v.carry >= 0 ? "pos" : "neg"}">${v.carry >= 0 ? "+" : ""}${v.carry.toFixed(2)}pp</td>` +
       `<td class="num">${r.ltv != null ? (r.ltv * 100).toFixed(0) + "%" + (r.conf === "emode" ? "ᵉ" : r.model === "pair" ? "ᴸ" : "") : "—"}</td>` +
       `<td class="num ${v.net >= 0 ? "pos" : "neg"}">${v.net.toFixed(2)}% @${L.toFixed(1)}×</td>` +
+      `<td class="num" style="color:${SIZE > mx ? "var(--warn)" : "var(--ink-2)"}" title="20%-of-supply cap: ${isFinite(mxS) ? fmt$(mxS) : "n/a (isolated market)"} · 10%-of-liquidity cap: ${isFinite(mxB) ? fmt$(mxB) : "—"}">${isFinite(mx) ? fmt$(mx) : "—"}</td>` +
       `<td class="num ${foot > 100 ? "neg" : ""}">${fmt$(borrowNeed)} / ${fmt$(r.avail)}${isFinite(foot) ? ` <span style="color:${foot > 100 ? "var(--crit)" : foot > 10 ? "var(--warn)" : "var(--muted)"}">(${foot.toFixed(0)}%)</span>` : ""}</td>` +
       `<td class="num">${r.util != null ? r.util.toFixed(0) + "%" : "—"}</td>` +
       `<td class="num" data-sk="${r.key}" style="color:var(--ink-2)">${r.streakTxt !== undefined ? r.streakTxt : "…"}</td>` +
       `<td>${notes.join(" · ")}</td></tr>`;
-    if (open) h += `<tr class="detail"><td colspan="10">${panelHtml(r)}</td></tr>`;
+    if (open) h += `<tr class="detail"><td colspan="11">${panelHtml(r)}</td></tr>`;
   });
   $("out").innerHTML = h + "</table>";
   $("out").querySelectorAll("tr.pick").forEach(tr => tr.addEventListener("click", () => {
