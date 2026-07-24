@@ -275,7 +275,7 @@ function hideTT() { $("tt").style.opacity = 0; }
             ltv: ltvRaw, lt, conf, assumed: conf === "unverified", emodeAsof: ve ? ve.asof : null,
             maxLev: ltvRaw ? 1 / (1 - ltvRaw) : 10, avail, util, collTvl: cm.tvl,
             collSupplyUsd: cm.supplyUsd, collAvail: Math.max(0, cm.supplyUsd - cm.borrowUsd),
-            borrowSupplyUsd: bm.supplyUsd, borrowUsd: bm.borrowUsd, borrowSupplyBaseNow: bm.supplyBase, borrowUnder: bm.under,
+            borrowSupplyUsd: bm.supplyUsd, borrowUsd: bm.borrowUsd, borrowSupplyBaseNow: bm.supplyBase, borrowUnder: bm.under, collUnder: cm.under,
             key: chain + "|" + cs + "|" + bs, intrPool: intr[cs].pool, collPool: cm.pool, borrowPool: bm.pool });
         }
       }
@@ -345,34 +345,49 @@ async function fillStreaks(rows) {
 
 // ---- on-chain IRM curve (verified: getReserveData 0x35ea6a75 -> strategy.getInterestRateData 0x131e889c) ----
 const IRM = {};
-async function irmOf(r) {
-  const cfg = POOLCFG[r.chain];
-  if (!cfg || !r.borrowUnder) return { err: "no on-chain config for this chain" };
-  if (r.bs === "GHO" && r.chain === "Ethereum") return { err: "GHO Core is governance-priced, not a utilization curve" };
-  const ck = r.chain + "|" + r.borrowUnder;
+async function reserveIrm(chain, asset) {
+  const cfg = POOLCFG[chain];
+  if (!cfg || !asset) return { err: "no on-chain config for this chain" };
+  const ck = chain + "|" + asset;
   if (IRM[ck]) return IRM[ck];
-  const rd = await rpcCall(cfg.rpc, cfg.pool, "0x35ea6a75" + pad(r.borrowUnder));
+  const rd = await rpcCall(cfg.rpc, cfg.pool, "0x35ea6a75" + pad(asset));
   if (!rd) return IRM[ck] = { err: "reserve read failed" };
   const strat = wAddr(word(rd, 11)), debtTok = wAddr(word(rd, 10)), bChain = wRayPct(word(rd, 4));
-  const [ird, dts, virt] = await Promise.all([
-    rpcCall(cfg.rpc, strat, "0x131e889c" + pad(r.borrowUnder)),
+  const [ird, dts, virt, conf] = await Promise.all([
+    rpcCall(cfg.rpc, strat, "0x131e889c" + pad(asset)),
     rpcCall(cfg.rpc, debtTok, "0x18160ddd"),
-    rpcCall(cfg.rpc, cfg.pool, "0x6fb07f96" + pad(r.borrowUnder)),
+    rpcCall(cfg.rpc, cfg.pool, "0x6fb07f96" + pad(asset)),
+    rpcCall(cfg.rpc, cfg.pool, "0xc44b11f7" + pad(asset)),
   ]);
   if (!ird || !dts || !virt) return IRM[ck] = { err: "strategy read failed" };
   const kink = wRayPct(word(ird, 0)) / 100, base = wRayPct(word(ird, 1)), s1 = wRayPct(word(ird, 2)), s2 = wRayPct(word(ird, 3));
   const debt = wNum(word(dts, 0)), vb = wNum(word(virt, 0));
   const u = debt + vb > 0 ? debt / (debt + vb) : 0;
+  const rf = conf ? Number((BigInt("0x" + word(conf, 0)) >> 64n) & 0xFFFFn) / 10000 : 0.10;
   const bAt = uu => uu <= kink ? base + s1 * uu / kink : base + s1 + s2 * (uu - kink) / (1 - kink);
   const ok = bChain != null && Math.abs(bAt(u) - bChain) < 0.05;
-  return IRM[ck] = { kink, base, s1, s2, u, bNow: bChain, mkt: (debt + vb), ok };
+  return IRM[ck] = { kink, base, s1, s2, u, rf, bNow: bChain, mkt: (debt + vb), ok };
+}
+async function irmOf(r) {
+  if (r.bs === "GHO" && r.chain === "Ethereum") return { err: "GHO Core is governance-priced, not a utilization curve" };
+  return reserveIrm(r.chain, r.borrowUnder);
 }
 function bAtOf(m) { return uu => uu <= m.kink ? m.base + m.s1 * uu / m.kink : m.base + m.s1 + m.s2 * (uu - m.kink) / (1 - m.kink); }
-function irmCharts(r, m) {
-  const L = levOf(r), bAt = bAtOf(m), sNow = econOf(r, L).s;
-  const dU = x => Math.min(0.999, m.u + x / Math.max(r.borrowSupplyUsd, 1));
+function irmCharts(r, m, mc) {
+  const L = levOf(r), bAt = bAtOf(m);
+  const dU = x => Math.min(0.999, m.u + x / Math.max(r.borrowSupplyUsd, 1));   // x = borrow USD added
   const borrowNeed = SIZE * (L - 1), uPost = dU(borrowNeed), bPost = bAt(uPost);
-  const netAt = x => sNow * L - bAt(dU(x)) * (L - 1);
+  // supply-side: your deposit dilutes the collateral market's lending APY
+  const collBorrowUsd = Math.max(0, (r.collSupplyUsd || 0) - (r.collAvail || 0));
+  let supAt = null;
+  if (mc && !mc.err && r.collSupplyUsd > 0) {
+    const cAt = bAtOf(mc);
+    const f = dep => { const uS = collBorrowUsd / (r.collSupplyUsd + dep * L); return cAt(uS) * uS * (1 - mc.rf); };
+    if (Math.abs(f(0) - r.supplyBase) < 0.5) supAt = f;      // sanity vs the API figure, else hold constant
+  }
+  const sAt = dep => r.intr + (supAt ? supAt(dep) : r.supplyBase) + (REW ? r.sRew : 0);
+  const sNow = sAt(SIZE);
+  const netAt = dep => sAt(dep) * L - bAt(dU(dep * (L - 1))) * (L - 1);
   const W = 470, H = 190, pl = 44, pr = 12, pt = 12, pb = 26;
   const maxY = Math.max(m.base + m.s1 + m.s2, bPost) * 1.05, y = v => pt + (H - pt - pb) * (1 - v / maxY), x = u => pl + (W - pl - pr) * u;
   let c1 = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:480px;display:block">`;
@@ -386,6 +401,7 @@ function irmCharts(r, m) {
   c1 += `<circle cx="${x(uPost)}" cy="${y(bPost)}" r="3.5" fill="${uPost > m.kink ? "var(--crit)" : "var(--warn)"}"/><text x="${Math.min(x(uPost) + 6, W - 105)}" y="${y(bPost) + 12}" fill="${uPost > m.kink ? "var(--crit)" : "var(--warn)"}" font-size="10">+you ${(uPost * 100).toFixed(1)}% - ${bPost.toFixed(2)}%</text>`;
   c1 += `</svg>`;
   const xMax = Math.max(SIZE * 2, ((m.kink - m.u) * r.borrowSupplyUsd / Math.max(L - 1, 0.05)) * 1.4, 1e6);
+  const supDrift = supAt ? supAt(0) - supAt(SIZE) : 0;
   const W2 = 470, y2max = Math.max(netAt(0) * 1.05, 0.1), y2min = Math.min(0, netAt(xMax)) * 1.05;
   const y2 = v => pt + (H - pt - pb) * (1 - (v - y2min) / (y2max - y2min)), x2 = v => pl + (W2 - pl - pr) * v / xMax;
   let c2 = `<svg viewBox="0 0 ${W2} ${H}" style="width:100%;max-width:480px;display:block">`;
@@ -402,17 +418,17 @@ function irmCharts(r, m) {
     <div class="pblock"><div class="ph">Borrow-rate curve - ${r.bs} on ${r.chain} ${m.ok ? '<span class="ok" style="font-weight:400">(reproduces on-chain rate)</span>' : ""}</div>${c1}
       <div style="margin-top:4px">on-chain: kink ${(m.kink * 100).toFixed(0)}% - slope1 ${m.s1.toFixed(2)}% - slope2 ${m.s2.toFixed(0)}%${m.base ? " - base " + m.base.toFixed(2) + "%" : ""}</div></div>
     <div class="pblock"><div class="ph">Net APY vs deposit size at ${L.toFixed(1)}x - your whole debt reprices as utilization climbs</div>${c2}
-      <div style="margin-top:4px">your ${fmt$(SIZE)} moves the borrow rate <b>${bAt(m.u).toFixed(2)}% -> ${bPost.toFixed(2)}%</b> (+${dBp.toFixed(0)}bp)${uPost > m.kink ? ' - <span class="bad">crosses the kink</span>' : ""}</div></div>
+      <div style="margin-top:4px">your ${fmt$(SIZE)} moves the borrow rate <b>${bAt(m.u).toFixed(2)}% -> ${bPost.toFixed(2)}%</b> (+${dBp.toFixed(0)}bp)${uPost > m.kink ? ' - <span class="bad">crosses the kink</span>' : ""}${supAt && supDrift > 0.02 ? `; supply APY dilutes <b>${supAt(0).toFixed(2)}% -> ${supAt(SIZE).toFixed(2)}%</b>` : ""}${supAt ? "" : "; collateral supply APY held constant (no on-chain read)"}</div></div>
   </div>`;
 }
 async function initIRM(r) {
   const id = "irm-" + r.key.replace(/[^a-zA-Z0-9]/g, "");
   if (!document.getElementById(id)) return;
-  const m = await irmOf(r);
+  const [m, mc] = await Promise.all([irmOf(r), r.collUnder ? reserveIrm(r.chain, r.collUnder) : null]);
   const el = document.getElementById(id);
   if (!el) return;
   if (m.err) { el.innerHTML = `<div style="color:var(--muted);font-size:12px;margin-top:10px">rate curve unavailable: ${m.err}</div>`; return; }
-  el.innerHTML = irmCharts(r, m);
+  el.innerHTML = irmCharts(r, m, mc);
 }
 
 // ---- detail panel ----
