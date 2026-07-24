@@ -314,6 +314,10 @@ function panelHtml(r) {
   const postUtil = r.borrowSupplyUsd ? (r.borrowUsd + Math.min(borrowNeed, r.avail)) / r.borrowSupplyUsd * 100 : null;
   const supFoot = r.collTvl > 0 ? gross / (r.collTvl + gross) * 100 : null;
   const borShare = (r.borrowUsd + borrowNeed) > 0 ? borrowNeed / (r.borrowUsd + borrowNeed) * 100 : null;
+  const maxBySupply = r.collSupplyUsd > 0 ? 0.25 * r.collSupplyUsd / L : null;   // gross/(S+gross)<=20% -> gross<=0.25S
+  const maxByBorrow = L > 1.01 ? 0.10 * r.avail / (L - 1) : Infinity;             // borrow need <= 10% of available
+  const maxDep = maxBySupply != null ? Math.min(maxBySupply, maxByBorrow) : maxByBorrow;
+  const bindTag = maxBySupply != null && maxBySupply < maxByBorrow ? "20%-of-supply" : "10%-of-borrow-liquidity";
   const uColl = r.collSupplyUsd > 0 ? 1 - r.collAvail / r.collSupplyUsd : 0;          // collateral-market utilization
   const wSS = (r.collSupplyUsd + gross) * (1 - uColl);                                  // steady-state withdrawable incl. your deposit
   const exitFoot = wSS > 0 ? gross / wSS * 100 : Infinity;
@@ -337,7 +341,8 @@ function panelHtml(r) {
         <div>gross collateral <b>${fmt$(gross)}</b> · borrow need <b>${fmt$(borrowNeed)}</b></div>
         <div>you'd be <b class="${supFoot > 15 ? "wr" : ""}">${supFoot != null ? supFoot.toFixed(1) + "%" : "—"}</b> of ${r.cs} supply (${fmt$(r.collSupplyUsd || r.collTvl)}) · <b class="${borShare > 20 ? "wr" : ""}">${borShare != null ? borShare.toFixed(1) + "%" : "—"}</b> of all ${r.bs} borrows</div>
         <div>available to borrow <b>${fmt$(r.avail)}</b> → footprint <b class="${foot > 100 ? "bad" : foot > 10 ? "wr" : "ok"}">${isFinite(foot) ? foot.toFixed(0) + "%" : "—"}</b> (framework cap 10%)</div>
-        <div>utilization ${r.util != null ? r.util.toFixed(0) : "—"}% → post-trade <b class="${postUtil > 88 ? "bad" : ""}">${postUtil != null ? postUtil.toFixed(0) + "%" : "—"}</b></div></div>
+        <div>utilization ${r.util != null ? r.util.toFixed(0) : "—"}% → post-trade <b class="${postUtil > 88 ? "bad" : ""}">${postUtil != null ? postUtil.toFixed(0) + "%" : "—"}</b></div>
+        <div>max deposit at ${L.toFixed(1)}×: <b class="${SIZE > maxDep ? "wr" : "ok"}">${isFinite(maxDep) ? fmt$(maxDep) : "—"}</b> <span style="color:var(--muted)">(binds at ${bindTag}; ≤20% of ${r.cs} supply = ${maxBySupply != null ? fmt$(maxBySupply) : "—"}, ≤10% of borrow liq = ${isFinite(maxByBorrow) ? fmt$(maxByBorrow) : "—"})</span></div></div>
       <div class="pblock"><div class="ph">Exit at size</div>
         <div>day one: your own deposit adds ${fmt$(gross)} of un-borrowed liquidity → <b class="ok">self-funded exit</b></div>
         <div>steady state (others borrow against your supply at the market's ${(uColl * 100).toFixed(0)}% utilization): withdrawable ≈ <b>${fmt$(wSS)}</b> → your gross = <b class="${exitFoot > 100 ? "bad" : exitFoot > 50 ? "wr" : "ok"}">${isFinite(exitFoot) ? exitFoot.toFixed(0) + "%" : "—"}</b>${exitFoot > 100 ? ` → unwind in <b>~${Math.ceil(exitFoot / 100)} tranches</b>` : ""}</div>
