@@ -93,6 +93,7 @@
       <button data-v="safe" class="on">Safe</button>
       <button data-v="max">Max</button>
     </div>
+    <input type="text" id="levIn" placeholder="e.g. 4.2×" style="width:64px" title="custom leverage — overrides the presets">
     <span class="ctl-lbl">Category</span>
     <div class="seg" id="catSeg">
       <button data-c="all" class="on">All</button>
@@ -176,7 +177,7 @@ const VERIFIED_EMODE = {
 };
 const REF_LEV = 3;
 
-let ROWS = [], CAT = "all", CHAIN = "all", MINLIQ = 1, REW = 1, GLEV = "safe", SIZE = 5e6, EXP = null;
+let ROWS = [], CAT = "all", CHAIN = "all", MINLIQ = 1, REW = 1, GLEV = "safe", GCUST = null, SIZE = 5e6, EXP = null;
 const CUSTL = {};   // per-row custom leverage from the panel slider
 
 function showTT(e, html) { const t = $("tt"); t.innerHTML = html; t.style.opacity = 1;
@@ -251,6 +252,7 @@ function hideTT() { $("tt").style.opacity = 0; }
 // effective leverage + economics at current settings
 function levOf(r) {
   if (CUSTL[r.key]) return Math.min(CUSTL[r.key], r.maxLev);
+  if (GCUST) return Math.min(GCUST, r.maxLev);
   if (r.conf === "unverified") return Math.min(REF_LEV, r.maxLev);
   if (GLEV === "max") return r.maxLev;
   if (GLEV === "safe") return Math.min(r.maxLev * 0.75, 10);
@@ -350,8 +352,9 @@ function panelHtml(r) {
         ${fl.length ? '<div style="margin-top:6px">' + fl.join("<br>") + "</div>" : ""}</div>
     </div>
     <div class="levrow">Adjust leverage
-      <input type="range" min="1.1" max="${r.maxLev.toFixed(1)}" step="0.1" value="${L.toFixed(1)}" data-lev="${r.key}">
-      <b data-levlbl="${r.key}">${L.toFixed(1)}×</b> <span style="color:var(--muted)">(max ${r.maxLev.toFixed(1)}×)</span>
+      <input type="range" min="1.05" max="${r.maxLev.toFixed(2)}" step="0.05" value="${L.toFixed(2)}" data-lev="${r.key}">
+      <input type="text" value="${L.toFixed(2)}" data-levin="${r.key}" style="width:56px;text-align:right">
+      <b data-levlbl="${r.key}">${L.toFixed(2)}×</b> <span style="color:var(--muted)">(max ${r.maxLev.toFixed(2)}×${r.conf === "unverified" ? " ref" : ""})</span>
     </div>
   </div>`;
 }
@@ -394,9 +397,18 @@ function render() {
     sl.addEventListener("input", () => {
       CUSTL[sl.dataset.lev] = +sl.value;
       const lbl = $("out").querySelector(`[data-levlbl="${sl.dataset.lev}"]`);
-      if (lbl) lbl.textContent = (+sl.value).toFixed(1) + "×";
+      if (lbl) lbl.textContent = (+sl.value).toFixed(2) + "×";
+      const inp = $("out").querySelector(`[data-levin="${sl.dataset.lev}"]`);
+      if (inp) inp.value = (+sl.value).toFixed(2);
     });
     sl.addEventListener("change", () => render());
+  });
+  $("out").querySelectorAll("input[data-levin]").forEach(inp => {
+    inp.addEventListener("click", e => e.stopPropagation());
+    inp.addEventListener("change", () => {
+      const v = parseFloat(inp.value);
+      if (isFinite(v) && v >= 1.05) { CUSTL[inp.dataset.levin] = v; render(); }
+    });
   });
   $("out").querySelectorAll("tr.detail").forEach(tr => tr.addEventListener("click", e => e.stopPropagation()));
   fillStreaks(rows);
@@ -406,7 +418,11 @@ function parseSize(t) { const v = parseFloat(String(t).replace(/[,$\s]/g, "")); 
 $("sizeIn").addEventListener("change", () => { SIZE = parseSize($("sizeIn").value); $("sizeIn").value = SIZE.toLocaleString("en-US"); render(); });
 $("levSeg").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return;
   $("levSeg").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
-  GLEV = b.dataset.v; Object.keys(CUSTL).forEach(k => delete CUSTL[k]); render(); });
+  GLEV = b.dataset.v; GCUST = null; $("levIn").value = ""; Object.keys(CUSTL).forEach(k => delete CUSTL[k]); render(); });
+$("levIn").addEventListener("change", () => {
+  const v = parseFloat(String($("levIn").value).replace(/[×x\s]/g, ""));
+  if (isFinite(v) && v >= 1.05) { GCUST = v; $("levSeg").querySelectorAll("button").forEach(x => x.classList.remove("on")); Object.keys(CUSTL).forEach(k => delete CUSTL[k]); render(); }
+  else { GCUST = null; $("levIn").value = ""; render(); } });
 $("catSeg").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return;
   $("catSeg").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); CAT = b.dataset.c; render(); });
 $("liqSeg").addEventListener("click", e => { const b = e.target.closest("button"); if (!b) return;
