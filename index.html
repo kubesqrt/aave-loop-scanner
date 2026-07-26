@@ -91,12 +91,11 @@
 <div class="wrap">
   <div class="masthead">
     <div>
-      <div class="eyebrow">Curation research</div>
-      <h1>DeFi loop scanner</h1>
+      <h1>Yield loop optimizer</h1>
     </div>
     <div class="asof" id="asof">loading…</div>
   </div>
-  <p class="sub">Levered-yield opportunities across major lending venues and Pendle PTs. Set deposit and leverage - every row reprices and checks liquidity at your size. Click a row for the deep dive.</p>
+  
 
   <div class="controls">
     <span class="ctl-lbl">Protocol</span>
@@ -690,7 +689,7 @@ async function rebuild() {
     if (tok !== rebuildTok) return;
   }
   ROWS = buildRows();
-  const note = $("protoNote"); if (note) note.textContent = proto.label + " - " + proto.note;
+  const note = $("protoNote"); if (note) note.textContent = "";
   const chains = [...new Set(ROWS.map(r => r.chain))].sort();
   const cur = CHAIN;
   $("chainSel").innerHTML = '<option value="all">All chains</option>' + chains.map(c => `<option>${c}</option>`).join("");
